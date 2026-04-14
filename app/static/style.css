@@ -1,0 +1,117 @@
+/* kid2tune – Unified dark theme */
+
+/* ── Base ──────────────────────────────────────────────────────────────── */
+body {
+  background: #1a1a2e;
+  color: #e8e8e8;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+/* ── Cards ─────────────────────────────────────────────────────────────── */
+.card {
+  background: #16213e;
+  border: 1px solid #0f3460;
+}
+
+/* ── Headings ──────────────────────────────────────────────────────────── */
+h1, h2, h3, h4, h5, h6 { color: #fff !important; }
+
+/* ── Text colors (readable on dark background) ────────────────────────── */
+.text-muted { color: #a0b0c8 !important; }
+.form-label, .form-text { color: #b8c8dc !important; }
+.form-check-label { color: #b8c8dc !important; }
+.small, small { color: #b0c0d4; }
+p { color: #d0d8e4; }
+
+/* ── Tables ────────────────────────────────────────────────────────────── */
+.table { color: #e0e4ec; }
+.table-dark { --bs-table-bg: #16213e; --bs-table-color: #e0e4ec; }
+.table-dark th { color: #fff; }
+.table-hover tbody tr:hover { background: #1a2d4f; }
+
+/* ── Forms ──────────────────────────────────────────────────────────────── */
+.form-control, .form-select {
+  background: #0f3460;
+  color: #e8e8e8;
+  border-color: #1a4080;
+}
+.form-control:focus, .form-select:focus {
+  background: #0f3460;
+  color: #fff;
+  border-color: #3080d0;
+  box-shadow: 0 0 0 0.2rem rgba(48, 128, 208, 0.25);
+}
+.form-control::placeholder { color: #7088a8; }
+.form-check-input {
+  background-color: #0f3460;
+  border-color: #1a4080;
+}
+.form-check-input:checked {
+  background-color: #3080d0;
+  border-color: #3080d0;
+}
+
+/* ── Navbar ──────────────────────────────────────────────────────────────── */
+.navbar { background: #0f3460 !important; }
+.navbar-brand { color: #fff !important; }
+
+/* ── Alerts ─────────────────────────────────────────────────────────────── */
+.alert { color: #e8e8e8; }
+.alert-warning { background: #3d3000; border-color: #5a4800; color: #ffd866; }
+.alert-info { background: #002a4a; border-color: #004070; color: #80c8ff; }
+.alert-danger { background: #3a0000; border-color: #5a0000; color: #ff8080; }
+
+/* ── Status dots ──────────────────────────────────────────────────────── */
+.status-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-right: 6px;
+}
+.dot-green  { background: #4ade80; }
+.dot-red    { background: #f87171; }
+.dot-yellow { background: #fbbf24; }
+.dot-gray   { background: #6b7280; }
+.dot-blue   { background: #60a5fa; }
+
+/* ── Signal bars (WiFi) ────────────────────────────────────────────────── */
+.signal-bar {
+  display: inline-block;
+  width: 4px;
+  margin-right: 1px;
+  background: #4ade80;
+  vertical-align: bottom;
+}
+.signal-weak { background: #6b7280; }
+
+/* ── Log areas ─────────────────────────────────────────────────────────── */
+.sync-entry, .wifi-entry, .bt-entry {
+  padding: 4px 8px;
+  border-bottom: 1px solid #0f3460;
+}
+.sync-ok, .wifi-ok, .bt-ok     { color: #4ade80; }
+.sync-err, .wifi-err, .bt-err  { color: #f87171; }
+.sync-info, .wifi-info, .bt-info { color: #60a5fa; }
+#sync-log, #wifi-log, #bt-log {
+  max-height: 250px;
+  overflow-y: auto;
+  font-family: monospace;
+  font-size: 0.85rem;
+}
+
+/* ── Dashboard box cards ───────────────────────────────────────────────── */
+.box-card { transition: border-color 0.3s; }
+.box-card.playing { border-color: #4ade80; }
+.box-card.stopped { border-color: #6b7280; }
+
+/* ── Bluetooth ──────────────────────────────────────────────────────────── */
+.bt-active-row { border-left: 3px solid #4ade80; }
+
+/* ── Player controls (index.html) ──────────────────────────────────────── */
+.btn-ctrl { min-width: 60px; }
+#track-title { font-size: 1.4rem; font-weight: bold; color: #fff; }
+#progress { height: 6px; }
+
+/* ── Badges ─────────────────────────────────────────────────────────────── */
+.badge { font-weight: 500; }

@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}{{ t("alarms.title") }} – kid2tune{% endblock %}
+{% block content %}
+<div class="container mt-4">
+  <div class="card p-4 mb-4">
+    <h5>{{ t("alarms.title") }}</h5>
+    <div id="alarm-list"></div>
+    <button class="btn btn-success btn-sm mt-3" onclick="addAlarm()">{{ t("alarms.new") }}</button>
+    <button class="btn btn-primary btn-sm mt-3 ms-2" onclick="saveAlarms()">{{ t("common.save") }}</button>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+let alarms = {{ alarms | tojson }};
+const mappings = {{ mappings | tojson }};
+const days = [{{ t("alarms.days.mo")|tojson }},{{ t("alarms.days.tu")|tojson }},{{ t("alarms.days.we")|tojson }},{{ t("alarms.days.th")|tojson }},{{ t("alarms.days.fr")|tojson }},{{ t("alarms.days.sa")|tojson }},{{ t("alarms.days.su")|tojson }}];
+const MSG_CARD_SELECT = {{ t("alarms.card_select")|tojson }};
+const MSG_SAVED = {{ t("alarms.saved")|tojson }};
+const MSG_DELETE = {{ t("common.delete")|tojson }};
+
+function renderAlarms() {
+  const list = document.getElementById('alarm-list');
+  list.innerHTML = '';
+  alarms.forEach((a, i) => {
+    const dayChecks = days.map((d, di) => {
+      const checked = (a.days || [1,2,3,4,5,6,7]).includes(di+1) ? 'checked' : '';
+      return `<label class="form-check-label me-2"><input type="checkbox" class="form-check-input" data-alarm="${i}" data-day="${di+1}" ${checked}> ${d}</label>`;
+    }).join('');
+    const cardOpts = Object.entries(mappings).map(([uid, e]) =>
+      `<option value="${uid}" ${a.rfid_uid===uid?'selected':''}>${e.label || uid}</option>`
+    ).join('');
+    list.innerHTML += `
+      <div class="card p-3 mb-2">
+        <div class="row g-2 align-items-center">
+          <div class="col-md-2">
+            <input type="time" class="form-control" value="${a.time||'07:00'}" onchange="alarms[${i}].time=this.value">
+          </div>
+          <div class="col-md-3">
+            <select class="form-select" onchange="alarms[${i}].rfid_uid=this.value">
+              <option value="">${MSG_CARD_SELECT}</option>${cardOpts}
+            </select>
+          </div>
+          <div class="col-md-1">
+            <input type="number" class="form-control" value="${a.volume||30}" min="0" max="100"
+                   onchange="alarms[${i}].volume=parseInt(this.value)" title="Volume">
+          </div>
+          <div class="col-md-4">${dayChecks}</div>
+          <div class="col-md-2 text-end">
+            <div class="form-check form-switch d-inline-block me-2">
+              <input class="form-check-input" type="checkbox" ${a.enabled!==false?'checked':''}
+                     onchange="alarms[${i}].enabled=this.checked">
+            </div>
+            <button class="btn btn-danger btn-sm" onclick="alarms.splice(${i},1);renderAlarms()">X</button>
+          </div>
+        </div>
+      </div>`;
+  });
+  // Day-Checkbox Events
+  document.querySelectorAll('[data-alarm][data-day]').forEach(cb => {
+    cb.onchange = function() {
+      const ai = parseInt(this.dataset.alarm);
+      const d = parseInt(this.dataset.day);
+      if (!alarms[ai].days) alarms[ai].days = [1,2,3,4,5,6,7];
+      if (this.checked) { if (!alarms[ai].days.includes(d)) alarms[ai].days.push(d); }
+      else { alarms[ai].days = alarms[ai].days.filter(x => x !== d); }
+    };
+  });
+}
+
+function addAlarm() {
+  alarms.push({time:'07:00', rfid_uid:'', volume:30, days:[1,2,3,4,5], enabled:true});
+  renderAlarms();
+}
+
+function saveAlarms() {
+  fetch('/alarms/save', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({alarms: alarms})
+  }).then(r=>r.json()).then(d=>{
+    if(d.ok) alert(MSG_SAVED);
+  });
+}
+
+renderAlarms();
+</script>
+{% endblock %}

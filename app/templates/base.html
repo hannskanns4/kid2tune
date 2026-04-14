@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="{{ current_lang }}">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}{{ t("nav.brand") }}{% endblock %}</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+{% block head %}{% endblock %}
+</head>
+<body>
+<nav class="navbar navbar-dark" style="background:#0f3460;">
+  <div class="container-fluid">
+    <a class="navbar-brand" href="/">&#127925; {{ t("nav.brand") }} <small class="text-muted" id="version-tag" style="font-size:0.6em"></small></a>
+    <div class="d-flex flex-wrap align-items-center gap-1">
+      <a href="/alarms" class="btn btn-outline-light btn-sm">{{ t("nav.alarms") }}</a>
+      <a href="/rfid" class="btn btn-outline-light btn-sm">{{ t("nav.rfid") }}</a>
+      <a href="/sync" class="btn btn-outline-light btn-sm">{{ t("nav.sync") }}</a>
+      <a href="/wifi" class="btn btn-outline-light btn-sm">{{ t("nav.wifi") }}</a>
+      <a href="/bluetooth" class="btn btn-outline-light btn-sm">{{ t("nav.bluetooth") }}</a>
+      <a href="/buttons" class="btn btn-outline-light btn-sm">{{ t("nav.buttons") }}</a>
+      <a href="/settings" class="btn btn-outline-light btn-sm">&#9881; {{ t("nav.settings") }}</a>
+      <a id="lms-link" class="btn btn-outline-info btn-sm" target="_blank" title="{{ t("nav.lms_title") }}">{{ t("nav.lms") }}</a>
+      <button class="btn btn-outline-warning btn-sm" id="btn-lcd" onclick="toggleLcd()" title="{{ t("nav.lcd_title") }}">&#128161;</button>
+    </div>
+  </div>
+</nav>
+<div id="standby-banner" class="alert alert-warning text-center m-0 rounded-0" style="display:none;">
+  <strong>{{ t("standby.banner_title") }}</strong> — {{ t("standby.banner_text") }} <button class="btn btn-sm btn-success ms-2" onclick="doStandby()">{{ t("standby.wake_up") }}</button>
+</div>
+
+{% block content %}{% endblock %}
+
+<script>
+const _t = {
+  confirm_shutdown: {{ t("standby.confirm_shutdown")|tojson }},
+  confirm_reboot: {{ t("standby.confirm_reboot")|tojson }},
+  confirm_standby: {{ t("standby.confirm_standby")|tojson }},
+  wake_up: {{ t("standby.wake_up")|tojson }},
+  deep_standby: {{ t("standby.deep_standby")|tojson }}
+};
+// ── Navbar: LCD-Backlight ───────────────────────────────────────────────────
+function toggleLcd(){
+  fetch('/lcd/backlight').then(r=>r.json()).then(d=>{
+    fetch('/lcd/backlight',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({on:!d.on})}).then(r=>r.json()).then(r=>{
+        document.getElementById('btn-lcd').classList.toggle('btn-warning', r.on);
+        document.getElementById('btn-lcd').classList.toggle('btn-outline-warning', !r.on);
+      });
+  });
+}
+fetch('/lcd/backlight').then(r=>r.json()).then(d=>{
+  document.getElementById('btn-lcd').classList.toggle('btn-warning', d.on);
+  document.getElementById('btn-lcd').classList.toggle('btn-outline-warning', !d.on);
+}).catch(()=>{});
+
+// ── Navbar: LMS-Link ────────────────────────────────────────────────────────
+document.getElementById('lms-link').href = 'http://' + location.hostname + ':9000';
+
+// ── Navbar: Version ─────────────────────────────────────────────────────────
+fetch('/api/version').then(r=>r.json()).then(d=>{
+  document.getElementById('version-tag').textContent = 'v' + d.version;
+}).catch(()=>{});
+
+// ── Standby functions (globally available) ──────────────────────────────────
+function doShutdown(){
+  if(!confirm(_t.confirm_shutdown)) return;
+  fetch('/api/shutdown',{method:'POST'}).then(r=>r.json()).then(d=>alert(d.message));
+}
+function doReboot(){
+  if(!confirm(_t.confirm_reboot)) return;
+  fetch('/api/reboot',{method:'POST'}).then(r=>r.json()).then(d=>alert(d.message));
+}
+function doStandby(){
+  fetch('/api/standby/status').then(r=>r.json()).then(d=>{
+    if(d.standby){
+      fetch('/api/wake',{method:'POST'}).then(r=>r.json()).then(d=>{
+        alert(d.message); checkStandby();
+      });
+    } else {
+      if(!confirm(_t.confirm_standby)) return;
+      fetch('/api/standby',{method:'POST'}).then(r=>r.json()).then(d=>{
+        alert(d.message); checkStandby();
+      });
+    }
+  });
+}
+function checkStandby(){
+  fetch('/api/standby/status').then(r=>r.json()).then(d=>{
+    const btn = document.getElementById('btn-standby');
+    const banner = document.getElementById('standby-banner');
+    if(d.standby){
+      if(btn){ btn.textContent = _t.wake_up; btn.classList.add('text-success'); }
+      if(banner) banner.style.display='';
+    } else {
+      if(btn){ btn.textContent = _t.deep_standby; btn.classList.remove('text-success'); }
+      if(banner) banner.style.display='none';
+    }
+  }).catch(()=>{});
+}
+checkStandby(); setInterval(checkStandby, 5000);
+</script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

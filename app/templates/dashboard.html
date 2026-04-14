@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+{% block title %}Dashboard – kid2tune{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h5>{{ t('multiroom.title') }}</h5>
+    <button class="btn btn-outline-info btn-sm" onclick="scanBoxes()" id="btn-scan">{{ t('multiroom.scan') }}</button>
+  </div>
+  <div id="scan-spinner" class="text-center py-3" style="display:none;">
+    <div class="spinner-border text-info spinner-border-sm"></div> {{ t('multiroom.scanning') }}
+  </div>
+  <div id="boxes" class="row g-3"></div>
+  <p id="no-boxes" class="text-muted text-center mt-3" style="display:none;">{{ t('multiroom.no_boxes') }}</p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ── i18n strings for JavaScript ─────────────────────────────────────────────
+const _tp = {
+  no_title:    {{ t("common.no_title")|tojson }},
+  error_msg:   {{ t("common.error_msg")|tojson }},
+  open:        {{ t("common.open")|tojson }},
+  master:      {{ t("multiroom.master")|tojson }},
+  slave:       {{ t("multiroom.slave")|tojson }}
+};
+
+let knownBoxes = [];
+
+function scanBoxes() {
+  document.getElementById('scan-spinner').style.display = '';
+  document.getElementById('btn-scan').disabled = true;
+  document.getElementById('no-boxes').style.display = 'none';
+
+  fetch('/api/status/full').then(r => r.json()).then(local => {
+    knownBoxes = [{ip: location.host, data: local, self: true}];
+    renderBoxes();
+
+    fetch('/api/discover').then(r => r.json()).then(others => {
+      others.forEach(r => knownBoxes.push(r));
+      renderBoxes();
+      document.getElementById('scan-spinner').style.display = 'none';
+      document.getElementById('btn-scan').disabled = false;
+      if (knownBoxes.length <= 1) document.getElementById('no-boxes').style.display = '';
+    }).catch(() => {
+      document.getElementById('scan-spinner').style.display = 'none';
+      document.getElementById('btn-scan').disabled = false;
+    });
+  });
+}
+
+function renderBoxes() {
+  const container = document.getElementById('boxes');
+  container.innerHTML = '';
+  knownBoxes.forEach(box => {
+    const p = box.data.player || {};
+    const mr = box.data.multiroom || {};
+    const mode = p.mode || 'stop';
+    const isPlaying = mode === 'play';
+    const title = p.title || _tp.no_title;
+    const artist = p.artist || '';
+    const volume = p.volume || 0;
+    const mrRole = mr.active ? (mr.role === 'master' ? _tp.master : _tp.slave) : '';
+
+    const card = document.createElement('div');
+    card.className = 'col-md-4';
+    card.innerHTML = `
+      <div class="card box-card p-3 ${isPlaying ? 'playing' : 'stopped'}" data-ip="${box.ip}">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <h5 class="mb-0">
+            <span class="status-dot ${isPlaying ? 'dot-green' : mode === 'pause' ? 'dot-blue' : 'dot-gray'}"></span>
+            ${box.data.hostname || box.ip}
+          </h5>
+          <span class="badge bg-secondary">${box.data.version || '?'}</span>
+        </div>
+        <div class="small">${title}</div>
+        <div class="small text-muted">${artist}</div>
+        <div class="d-flex justify-content-between align-items-center mt-2">
+          <span class="small">${mode.toUpperCase()}</span>
+          ${mrRole ? '<span class="badge bg-info">' + mrRole + '</span>' : ''}
+        </div>
+        <div class="d-flex align-items-center gap-2 mt-2">
+          <button class="btn btn-sm btn-outline-danger px-1" onclick="remoteCtrl('${box.ip}','vol_down')">&#128265;-</button>
+          <input type="range" class="form-range flex-grow-1" min="0" max="100" value="${volume}"
+                 id="vol-${box.ip.replace(/\./g,'-')}"
+                 oninput="remoteVol('${box.ip}', this.value)"
+                 style="height:20px;">
+          <span class="small text-nowrap" id="vol-label-${box.ip.replace(/\./g,'-')}">${volume}%</span>
+          <button class="btn btn-sm btn-outline-danger px-1" onclick="remoteCtrl('${box.ip}','vol_up')">&#128265;+</button>
+        </div>
+        <div class="d-flex gap-1 mt-2">
+          <button class="btn btn-sm btn-outline-light" onclick="remoteCtrl('${box.ip}','prev')">&#9664;&#9664;</button>
+          <button class="btn btn-sm btn-outline-light" onclick="remoteCtrl('${box.ip}','pause')">&#9646;&#9646;</button>
+          <button class="btn btn-sm btn-outline-light" onclick="remoteCtrl('${box.ip}','next')">&#9654;&#9654;</button>
+          <a href="http://${box.ip}:80/" class="btn btn-sm btn-outline-info ms-auto" target="_blank">${_tp.open}</a>
+        </div>
+      </div>`;
+    container.appendChild(card);
+  });
+}
+
+function remoteCtrl(ip, action) {
+  fetch('http://' + ip + ':80/api/control/' + action, {method: 'POST'}).catch(() => {});
+  setTimeout(refreshAll, 500);
+}
+
+let volTimers = {};
+function remoteVol(ip, val) {
+  val = parseInt(val);
+  const labelId = 'vol-label-' + ip.replace(/\./g, '-');
+  const label = document.getElementById(labelId);
+  if (label) label.textContent = val + '%';
+  clearTimeout(volTimers[ip]);
+  volTimers[ip] = setTimeout(() => {
+    fetch('http://' + ip + ':80/api/volume', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({volume: val})
+    }).catch(() => {});
+  }, 200);
+}
+
+function refreshAll() {
+  knownBoxes.forEach((box, i) => {
+    const url = box.self ? '/api/status/full' : 'http://' + box.ip + ':80/api/status/full';
+    fetch(url, {signal: AbortSignal.timeout(2000)})
+      .then(r => r.json())
+      .then(d => {
+        knownBoxes[i].data = d;
+        const sliderId = 'vol-' + box.ip.replace(/\./g, '-');
+        const slider = document.getElementById(sliderId);
+        const vol = (d.player || {}).volume || 0;
+        if (slider && document.activeElement !== slider) {
+          slider.value = vol;
+          const label = document.getElementById('vol-label-' + box.ip.replace(/\./g, '-'));
+          if (label) label.textContent = vol + '%';
+        }
+      })
+      .catch(() => {});
+  });
+}
+
+scanBoxes();
+setInterval(refreshAll, 3000);
+</script>
+{% endblock %}

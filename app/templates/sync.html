@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+{% block title %}NAS-Sync – kid2tune{% endblock %}
+{% block content %}
+<div class="container mt-4">
+
+  <!-- Status overview -->
+  <div class="card p-4 mb-4">
+    <h5>&#128203; {{ t("sync.status_title") }}</h5>
+    <div class="row g-3">
+      <div class="col-md-3">
+        <div class="small text-muted">{{ t("sync.box_id") }}</div>
+        <div><strong id="st-box-id">{{ sync.get('box_id', 'unknown') }}</strong></div>
+      </div>
+      <div class="col-md-3">
+        <div class="small text-muted">{{ t("sync.local") }}</div>
+        <div><strong>{{ mapping_count }}</strong> {{ t("sync.mappings") }}</div>
+      </div>
+      <div class="col-md-3">
+        <div class="small text-muted">{{ t("sync.nas_connection") }}</div>
+        <div id="st-nas"><span class="status-dot dot-gray"></span>{{ t("common.unknown") }}</div>
+      </div>
+      <div class="col-md-3">
+        <div class="small text-muted">{{ t("sync.pending_changes") }}</div>
+        <div>
+          {% if pending_count > 0 %}
+          <span class="status-dot dot-yellow"></span><strong>{{ pending_count }}</strong> {{ t("sync.in_queue") }}
+          {% else %}
+          <span class="status-dot dot-green"></span>{{ t("common.none") }}
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Configuration -->
+  <div class="card p-4 mb-4">
+    <h5>&#128193; {{ t("sync.config_title") }}</h5>
+    <p class="text-muted small">
+      {{ t("sync.config_desc") }}
+    </p>
+    <form method="POST" action="/sync/save">
+      <div class="row g-3">
+        <div class="col-12">
+          <div class="form-check form-switch mb-3">
+            <input class="form-check-input" type="checkbox" name="enabled" id="sync-enabled"
+                   {% if sync.get('enabled') %}checked{% endif %}>
+            <label class="form-check-label" for="sync-enabled">{{ t("sync.enabled") }}</label>
+          </div>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label small">{{ t("sync.box_id_label") }}</label>
+          <input type="text" class="form-control" name="box_id"
+                 value="{{ sync.get('box_id', '') }}"
+                 placeholder="{{ t('sync.box_id_placeholder') }}">
+          <div class="form-text text-muted">{{ t("sync.box_id_help") }}</div>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label small">{{ t("sync.share_label") }}</label>
+          <input type="text" class="form-control" name="nas_share"
+                 value="{{ sync.get('nas_share', '') }}"
+                 placeholder="{{ t('sync.share_placeholder') }}">
+          <div class="form-text text-muted">{{ t("sync.share_help") }}</div>
+        </div>
+        <div class="col-md-2">
+          <label class="form-label small">{{ t("common.username") }}</label>
+          <input type="text" class="form-control" name="username"
+                 value="{{ sync.get('username', '') }}"
+                 placeholder="{{ t('common.username') }}">
+        </div>
+        <div class="col-md-2">
+          <label class="form-label small">{{ t("common.password") }}</label>
+          <input type="password" class="form-control" name="password"
+                 value="{{ sync.get('password', '') }}"
+                 placeholder="{{ t('common.password') }}">
+        </div>
+        <div class="col-12">
+          <button type="submit" class="btn btn-success me-2">{{ t("common.save") }}</button>
+          <button type="button" class="btn btn-outline-info" onclick="testConn()">{{ t("sync.test_connection") }}</button>
+          <a href="/" class="btn btn-secondary ms-2">{{ t("common.back") }}</a>
+        </div>
+      </div>
+    </form>
+  </div>
+
+  <!-- Sync actions -->
+  <div class="card p-4 mb-4">
+    <h5>&#128259; {{ t("sync.actions_title") }}</h5>
+    <div class="d-flex gap-2 flex-wrap mb-3">
+      <button class="btn btn-primary" onclick="doSync('full')">
+        &#128259; {{ t("sync.full_sync") }}
+      </button>
+      <button class="btn btn-outline-info" onclick="doSync('pull')">
+        &#11015; {{ t("sync.pull") }}
+      </button>
+      <button class="btn btn-outline-warning" onclick="doSync('push')">
+        &#11014; {{ t("sync.push") }}
+      </button>
+    </div>
+    <div id="sync-log"></div>
+  </div>
+
+  <!-- Explanation -->
+  <div class="card p-4">
+    <h5>&#128161; {{ t("sync.how_title") }}</h5>
+    <ul class="small text-muted mb-0">
+      <li><strong>{{ t("sync.how_versioning_title") }}</strong> {{ t("sync.how_versioning") }}</li>
+      <li><strong>{{ t("sync.how_delete_title") }}</strong> {{ t("sync.how_delete") }}</li>
+      <li><strong>{{ t("sync.how_offline_title") }}</strong> {{ t("sync.how_offline") }}</li>
+      <li><strong>{{ t("sync.how_auto_title") }}</strong> {{ t("sync.how_auto") }}</li>
+      <li><strong>{{ t("sync.how_rfid_title") }}</strong> {{ t("sync.how_rfid") }}</li>
+      <li><strong>{{ t("sync.how_scenario_title") }}</strong> {{ t("sync.how_scenario") }}</li>
+    </ul>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const _tp = {
+  testing: {{ t("sync.testing")|tojson }},
+  error: {{ t("common.error")|tojson }},
+  full: {{ t("sync.full_sync")|tojson }},
+  pull: {{ t("sync.pull_label")|tojson }},
+  push: {{ t("sync.push_label")|tojson }},
+  action_started: {{ t("sync.action_started")|tojson }},
+  disabled: {{ t("sync.disabled")|tojson }},
+  connected: {{ t("sync.connected")|tojson }},
+  unreachable: {{ t("sync.unreachable")|tojson }}
+};
+
+function addLog(msg, ok, cls) {
+  const log = document.getElementById('sync-log');
+  const c = cls || (ok ? 'sync-ok' : 'sync-err');
+  const time = new Date().toLocaleTimeString('de-DE');
+  log.innerHTML = `<div class="sync-entry ${c}">[${time}] ${msg}</div>` + log.innerHTML;
+}
+
+function testConn() {
+  addLog(_tp.testing, true, 'sync-info');
+  fetch('/sync/test', {method:'POST'})
+    .then(r => r.json())
+    .then(d => addLog(d.message, d.ok))
+    .catch(e => addLog(_tp.error + ': ' + e, false));
+}
+
+function doSync(action) {
+  const labels = {full: _tp.full, pull: _tp.pull, push: _tp.push};
+  addLog(_tp.action_started.replace('{action}', labels[action]), true, 'sync-info');
+  fetch('/sync/' + action, {method:'POST'})
+    .then(r => r.json())
+    .then(d => {
+      addLog(d.message, d.ok);
+      if(d.ok) setTimeout(() => location.reload(), 1500);
+    })
+    .catch(e => addLog(_tp.error + ': ' + e, false));
+}
+
+// Check NAS status on page load
+fetch('/sync/status').then(r=>r.json()).then(d=>{
+  const el = document.getElementById('st-nas');
+  if(!d.enabled) {
+    el.innerHTML = '<span class="status-dot dot-gray"></span>' + _tp.disabled;
+  } else if(d.nas_reachable) {
+    el.innerHTML = '<span class="status-dot dot-green"></span>' + _tp.connected.replace('{active}', d.shared_active).replace('{deleted}', d.shared_deleted);
+  } else {
+    el.innerHTML = '<span class="status-dot dot-red"></span>' + _tp.unreachable;
+  }
+}).catch(()=>{});
+</script>
+{% endblock %}

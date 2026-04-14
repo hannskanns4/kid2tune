@@ -1,0 +1,247 @@
+{% extends "base.html" %}
+{% block title %}{{ t("settings.hostname_title") }} – kid2tune{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+
+  <!-- Hostname -->
+  <div class="card p-4 mb-4">
+    <h5>&#127968; {{ t("settings.hostname_title") }}</h5>
+    <p class="text-muted small">{{ t("settings.hostname_desc") }}</p>
+    <div class="row g-2 align-items-end">
+      <div class="col-md-4">
+        <label class="form-label small">{{ t("settings.current_hostname") }}</label>
+        <input type="text" class="form-control" id="hostname" value="{{ hostname }}" placeholder="{{ t('settings.hostname_placeholder') }}">
+      </div>
+      <div class="col-md-2">
+        <button class="btn btn-success" onclick="saveHostname()">{{ t("common.save") }}</button>
+      </div>
+      <div class="col-md-6">
+        <div class="alert alert-info small mb-0 py-2">
+          {{ t("settings.hostname_reboot_notice") }} <strong id="hostname-preview">{{ hostname }}.fritz.box</strong>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Standby & display timers -->
+  <div class="card p-4 mb-4">
+    <h5>&#9200; {{ t("settings.timing_title") }}</h5>
+    <div class="row g-3">
+      <div class="col-md-3">
+        <label class="form-label small">{{ t("settings.auto_standby") }}</label>
+        <input type="number" class="form-control" id="auto-standby" min="0" max="480" value="{{ settings.auto_standby_minutes }}">
+        <div class="form-text">{{ t("settings.auto_standby_help") }}</div>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label small">{{ t("settings.display_off") }}</label>
+        <input type="number" class="form-control" id="display-off" min="1" max="480" value="{{ settings.display_off_minutes }}">
+        <div class="form-text">{{ t("settings.display_off_help") }}</div>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label small">{{ t("settings.hold_time") }}</label>
+        <input type="number" class="form-control" id="sd-hold" min="2" max="15" value="{{ settings.hold_time }}">
+        <div class="form-text">{{ t("settings.hold_time_help") }}</div>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label small">{{ t("settings.confirm_timeout") }}</label>
+        <input type="number" class="form-control" id="sd-timeout" min="5" max="60" value="{{ settings.confirm_timeout }}">
+        <div class="form-text">{{ t("settings.confirm_timeout_help") }}</div>
+      </div>
+    </div>
+    <button class="btn btn-success mt-3" onclick="saveTimings()">{{ t("settings.save_timing") }}</button>
+  </div>
+
+  <!-- Language -->
+  <div class="card mb-3">
+    <div class="card-body">
+      <h5>{{ t("settings.language") }}</h5>
+      <div class="row align-items-center mb-2">
+        <div class="col-6"><label>{{ t("settings.language_label") }}</label></div>
+        <div class="col-6">
+          <select id="lang-select" class="form-select form-select-sm" onchange="setLanguage(this.value)">
+            {% for lang in languages %}
+            <option value="{{ lang }}" {{ 'selected' if lang == current_lang }}>{{ lang.upper() }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- System actions -->
+  <div class="card p-4 mb-4">
+    <h5>&#128268; {{ t("settings.system_title") }}</h5>
+    <div class="d-flex gap-2 flex-wrap">
+      <button class="btn btn-warning" onclick="doStandby()" id="btn-standby">{{ t("standby.deep_standby") }}</button>
+      <button class="btn btn-secondary" onclick="doReboot()">{{ t("settings.reboot") }}</button>
+      <button class="btn btn-danger" onclick="doShutdown()">{{ t("settings.shutdown") }}</button>
+    </div>
+    <p class="text-muted small mt-2 mb-0">
+      <strong>{{ t("standby.deep_standby") }}:</strong> {{ t("settings.standby_desc") }}<br>
+      <strong>{{ t("settings.shutdown") }}:</strong> {{ t("settings.shutdown_desc") }}
+    </p>
+  </div>
+
+  <!-- Update -->
+  <div class="card p-4 mb-4">
+    <h5>&#128259; {{ t("settings.update_title") }}</h5>
+    <p class="text-muted small">{{ t("settings.update_desc") }}</p>
+    <div class="row g-2 mb-3">
+      <div class="col-md-6">
+        <label class="form-label small">{{ t("settings.token_label") }}</label>
+        <div class="input-group">
+          <input type="password" class="form-control form-control-sm" id="github-token" placeholder="ghp_xxxxxxxxxxxx">
+          <button class="btn btn-sm btn-outline-secondary" onclick="saveToken()">{{ t("common.save") }}</button>
+        </div>
+        <div class="form-text">{{ t("settings.token_help") }}</div>
+      </div>
+    </div>
+    <div class="d-flex gap-2 flex-wrap align-items-center">
+      <button class="btn btn-primary" onclick="checkUpdate()" id="btn-check">{{ t("settings.check_update") }}</button>
+      <button class="btn btn-success" onclick="doGitUpdate()" id="btn-update">{{ t("settings.update_this") }}</button>
+      <button class="btn btn-outline-success" onclick="doGitUpdateAll()" id="btn-update-all">{{ t("settings.update_all") }}</button>
+      <span id="update-status" class="text-muted small"></span>
+    </div>
+  </div>
+
+  <!-- Info -->
+  <div class="card p-4">
+    <h5>&#128712; {{ t("settings.sysinfo_title") }}</h5>
+    <table class="table table-dark table-sm mb-0">
+      <tr><td>{{ t("settings.hostname") }}</td><td id="info-hostname">{{ hostname }}</td></tr>
+      <tr><td>{{ t("settings.version") }}</td><td id="info-version">{{ version }}</td></tr>
+      <tr><td>{{ t("settings.ip_address") }}</td><td id="info-ip">–</td></tr>
+    </table>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const MSG_HOSTNAME_MIN = {{ t("settings.msg_hostname_min")|tojson }};
+const MSG_HOSTNAME_INVALID = {{ t("settings.msg_hostname_invalid")|tojson }};
+const MSG_HOSTNAME_CONFIRM = {{ t("settings.msg_hostname_confirm")|tojson }};
+const MSG_SETTINGS_SAVED = {{ t("settings.msg_settings_saved")|tojson }};
+const MSG_ERROR = {{ t("settings.msg_error")|tojson }};
+const MSG_CHECKING = {{ t("settings.msg_checking")|tojson }};
+const MSG_UPDATE_AVAILABLE = {{ t("settings.msg_update_available")|tojson }};
+const MSG_UP_TO_DATE = {{ t("settings.msg_up_to_date")|tojson }};
+const MSG_UPDATE_CONFIRM = {{ t("settings.msg_update_confirm")|tojson }};
+const MSG_UPDATING = {{ t("settings.msg_updating")|tojson }};
+const MSG_UPDATE_ALL_CONFIRM = {{ t("settings.msg_update_all_confirm")|tojson }};
+const MSG_UPDATE_ALL_RUNNING = {{ t("settings.msg_update_all_running")|tojson }};
+const MSG_TOKEN_SET = {{ t("settings.msg_token_set")|tojson }};
+
+// Update hostname preview live
+document.getElementById('hostname').addEventListener('input', function(){
+  document.getElementById('hostname-preview').textContent = this.value + '.fritz.box';
+});
+
+function setLanguage(lang){
+  fetch('/api/language',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({language:lang})})
+  .then(r=>r.json()).then(d=>{ if(d.ok) location.reload(); });
+}
+
+function saveHostname(){
+  const name = document.getElementById('hostname').value.trim().toLowerCase();
+  if(!name || name.length < 2) { alert(MSG_HOSTNAME_MIN); return; }
+  if(!/^[a-z0-9][a-z0-9-]*[a-z0-9]$/.test(name) && name.length > 1) {
+    alert(MSG_HOSTNAME_INVALID); return;
+  }
+  if(!confirm(MSG_HOSTNAME_CONFIRM.replace('{name}', name))) return;
+  fetch('/api/hostname', {method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({hostname: name})
+  }).then(r=>r.json()).then(d=>{
+    if(d.ok) alert(d.message);
+    else alert(MSG_ERROR + ': ' + d.message);
+  });
+}
+
+function saveTimings(){
+  const data = {
+    auto_standby_minutes: parseInt(document.getElementById('auto-standby').value),
+    display_off_minutes: parseInt(document.getElementById('display-off').value),
+    hold_time: parseInt(document.getElementById('sd-hold').value),
+    confirm_timeout: parseInt(document.getElementById('sd-timeout').value),
+  };
+  fetch('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(data)
+  }).then(r=>r.json()).then(d=>{
+    if(d.ok) alert(MSG_SETTINGS_SAVED);
+    else alert(MSG_ERROR + ': ' + d.message);
+  });
+}
+
+// Display IP address
+fetch('/api/status/full').then(r=>r.json()).then(d=>{
+  document.getElementById('info-ip').textContent = location.hostname;
+}).catch(()=>{});
+
+// Load token
+fetch('/api/update/token').then(r=>r.json()).then(d=>{
+  if(d.has_token) document.getElementById('github-token').placeholder = MSG_TOKEN_SET;
+}).catch(()=>{});
+
+function saveToken(){
+  const token = document.getElementById('github-token').value.trim();
+  fetch('/api/update/token', {method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({token: token})
+  }).then(r=>r.json()).then(d=>{
+    alert(d.message);
+    if(token) document.getElementById('github-token').placeholder = MSG_TOKEN_SET;
+    document.getElementById('github-token').value = '';
+  });
+}
+
+// Update functions
+function checkUpdate(){
+  document.getElementById('update-status').textContent = MSG_CHECKING;
+  document.getElementById('btn-check').disabled = true;
+  fetch('/api/update/check').then(r=>r.json()).then(d=>{
+    document.getElementById('btn-check').disabled = false;
+    if(d.error){
+      document.getElementById('update-status').textContent = MSG_ERROR + ': ' + d.error;
+      return;
+    }
+    if(d.update_available){
+      document.getElementById('update-status').textContent = MSG_UPDATE_AVAILABLE + ': ' + d.current + ' \u2192 ' + d.remote;
+      document.getElementById('btn-update').disabled = false;
+      document.getElementById('btn-update-all').disabled = false;
+    } else {
+      document.getElementById('update-status').textContent = MSG_UP_TO_DATE.replace('{version}', d.current);
+    }
+  }).catch(e=>{
+    document.getElementById('btn-check').disabled = false;
+    document.getElementById('update-status').textContent = MSG_ERROR + ': ' + e;
+  });
+}
+
+function doGitUpdate(){
+  if(!confirm(MSG_UPDATE_CONFIRM)) return;
+  document.getElementById('update-status').textContent = MSG_UPDATING;
+  document.getElementById('btn-update').disabled = true;
+  fetch('/api/update/git', {method:'POST'}).then(r=>r.json()).then(d=>{
+    document.getElementById('update-status').textContent = d.message;
+    if(d.ok) setTimeout(()=>location.reload(), 3000);
+  }).catch(e=>{
+    document.getElementById('update-status').textContent = MSG_ERROR + ': ' + e;
+    document.getElementById('btn-update').disabled = false;
+  });
+}
+
+function doGitUpdateAll(){
+  if(!confirm(MSG_UPDATE_ALL_CONFIRM)) return;
+  document.getElementById('update-status').textContent = MSG_UPDATE_ALL_RUNNING;
+  document.getElementById('btn-update-all').disabled = true;
+  fetch('/api/update/git/all', {method:'POST'}).then(r=>r.json()).then(d=>{
+    document.getElementById('update-status').textContent = d.message;
+    if(d.ok) setTimeout(()=>location.reload(), 3000);
+  }).catch(e=>{
+    document.getElementById('update-status').textContent = MSG_ERROR + ': ' + e;
+    document.getElementById('btn-update-all').disabled = false;
+  });
+}
+</script>
+{% endblock %}
