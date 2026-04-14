@@ -3,6 +3,11 @@
 All notable changes to this project are documented here.
 Versioning: **X.Y.Z** — X = major, Y = feature, Z = bugfix.
 
+## [2.8.2] – 2026-04-14
+
+### Changed
+- Complete README rewrite covering all features: LCD layout editor, button detect mode, auto update check, multiroom sync, reserved GPIO pins, LCD variables reference, updated config example, troubleshooting
+
 ## [2.8.1] – 2026-04-14
 
 ### Added
