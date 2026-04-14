@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# kid2tune Installer v2.8.1 for Raspberry Pi Zero 2W
+# kid2tune Installer v2.8.2 for Raspberry Pi Zero 2W
 # Installs: Lyrion Music Server, Squeezelite, RFID Controller, I2C LCD,
 #           GPIO Buttons, Flask Web Interface
 # Usage:    sudo bash install.sh
@@ -20,7 +20,7 @@ error() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 step()  { echo -e "\n${CYAN}══════════════════════════════════════════${NC}"; echo -e "${CYAN}  $*${NC}"; echo -e "${CYAN}══════════════════════════════════════════${NC}"; }
 
 # ── Version & Configuration ────────────────────────────────────────────────
-VERSION="2.8.1"
+VERSION="2.8.2"
 SWAP_FILE="/var/tmp/install_swap"
 BTN_VOL_UP=19
 BTN_VOL_DOWN=26
