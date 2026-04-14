@@ -1,0 +1,289 @@
+{% extends "base.html" %}
+{% block title %}{{ t("nav.bluetooth") }} – {{ t("nav.brand") }}{% endblock %}
+{% block content %}
+<div class="container mt-4">
+
+  {% if not bt_available %}
+  <div class="alert alert-danger">
+    <strong>{{ t("bluetooth.not_available") }}</strong> {{ t("bluetooth.no_adapter") }}
+  </div>
+  {% endif %}
+
+  <!-- Audio output status -->
+  <div class="card p-4 mb-4">
+    <h5>&#128264; {{ t("bluetooth.audio_title") }}</h5>
+    <div class="row g-3">
+      <div class="col-md-4">
+        <div class="small text-muted">{{ t("bluetooth.current_output") }}</div>
+        <div id="st-output">
+          {% if status.active_output == 'bluetooth' and status.connected_device %}
+            <span class="status-dot dot-blue"></span>
+            <strong>{{ t("bluetooth.bt_device").replace("{name}", status.connected_device.name) }}</strong>
+          {% else %}
+            <span class="status-dot dot-green"></span>
+            <strong>{{ t("bluetooth.local_speaker") }}</strong>
+          {% endif %}
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div class="small text-muted">{{ t("bluetooth.adapter") }}</div>
+        <div>
+          {% if bt_available %}
+            <span class="status-dot dot-green"></span>{{ t("common.active") }}
+          {% else %}
+            <span class="status-dot dot-red"></span>{{ t("common.inactive") }}
+          {% endif %}
+        </div>
+      </div>
+      <div class="col-md-4 d-flex align-items-end">
+        {% if status.active_output == 'bluetooth' %}
+          <button class="btn btn-warning btn-sm" onclick="switchAudio('local','')">
+            &#128266; {{ t("bluetooth.back_to_speaker") }}
+          </button>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  {% if bt_available %}
+  <!-- Scan devices -->
+  <div class="card p-4 mb-4">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <h5 class="mb-0">&#128269; {{ t("bluetooth.scan_title") }}</h5>
+      <button class="btn btn-outline-info btn-sm" onclick="scanDevices()" id="btn-scan">
+        {{ t("bluetooth.scan_button") }}
+      </button>
+    </div>
+    <p class="text-muted small">{{ t("bluetooth.scan_hint") }}</p>
+    <div id="scan-spinner" class="text-center py-3" style="display:none;">
+      <div class="spinner-border text-info spinner-border-sm"></div> {{ t("bluetooth.scanning") }}
+    </div>
+    <table class="table table-dark table-hover" id="scan-table" style="display:none;">
+      <thead><tr><th>{{ t("bluetooth.device") }}</th><th>{{ t("bluetooth.mac") }}</th><th>{{ t("bluetooth.status") }}</th><th></th></tr></thead>
+      <tbody id="scan-body"></tbody>
+    </table>
+  </div>
+
+  <!-- Paired devices -->
+  <div class="card p-4 mb-4">
+    <h5>&#128279; {{ t("bluetooth.paired_title") }}</h5>
+    {% if paired %}
+    <table class="table table-dark table-hover">
+      <thead><tr><th>{{ t("bluetooth.device") }}</th><th>{{ t("bluetooth.mac") }}</th><th>{{ t("bluetooth.status") }}</th><th>{{ t("bluetooth.actions") }}</th></tr></thead>
+      <tbody id="paired-body">
+        {% for dev in paired %}
+        <tr class="{% if status.connected_device and status.connected_device.mac == dev.mac %}bt-active-row{% endif %}"
+            id="row-{{ dev.mac | replace(':', '-') }}">
+          <td>{{ dev.name }}</td>
+          <td><code>{{ dev.mac }}</code></td>
+          <td>
+            {% if dev.connected %}
+              <span class="status-dot dot-green"></span>{{ t("bluetooth.connected") }}
+            {% else %}
+              <span class="status-dot dot-gray"></span>{{ t("bluetooth.disconnected") }}
+            {% endif %}
+          </td>
+          <td>
+            <div class="d-flex gap-1 flex-wrap">
+              {% if dev.connected %}
+                {% if not (status.connected_device and status.connected_device.mac == dev.mac) %}
+                  <button class="btn btn-info btn-sm"
+                          onclick="switchAudio('bluetooth','{{ dev.mac }}')">&#128266; {{ t("bluetooth.audio_here") }}</button>
+                {% endif %}
+                <button class="btn btn-outline-warning btn-sm"
+                        onclick="disconnectDevice('{{ dev.mac }}')">{{ t("common.disconnect") }}</button>
+              {% else %}
+                <button class="btn btn-success btn-sm"
+                        onclick="connectDevice('{{ dev.mac }}')">{{ t("common.connect") }}</button>
+              {% endif %}
+              <button class="btn btn-outline-danger btn-sm"
+                      onclick="removeDevice('{{ dev.mac }}','{{ dev.name }}')">{{ t("bluetooth.remove") }}</button>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="text-muted">{{ t("bluetooth.no_paired") }}</p>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <!-- Notes -->
+  <div class="card p-4 mb-4">
+    <h5>&#128161; {{ t("common.notes") }}</h5>
+    <ul class="small text-muted mb-0">
+      <li>{{ t("bluetooth.note_restart") }}</li>
+      <li>{{ t("bluetooth.note_antenna") }}</li>
+      <li>{{ t("bluetooth.note_fallback") }}</li>
+    </ul>
+  </div>
+
+  <!-- Log -->
+  <div class="card p-4">
+    <h5>&#128221; {{ t("common.protocol") }}</h5>
+    <div id="bt-log"></div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+var _tp = {
+  scanning: {{ t("bluetooth.scanning")|tojson }},
+  no_devices: {{ t("bluetooth.no_devices")|tojson }},
+  devices_found: {{ t("bluetooth.devices_found")|tojson }},
+  paired: {{ t("bluetooth.paired")|tojson }},
+  new_device: {{ t("bluetooth.new")|tojson }},
+  connected: {{ t("bluetooth.connected")|tojson }},
+  pair: {{ t("bluetooth.pair")|tojson }},
+  connect: {{ t("common.connect")|tojson }},
+  audio: {{ t("bluetooth.audio")|tojson }},
+  error_msg: {{ t("common.error_msg")|tojson }},
+  pairing: {{ t("bluetooth.pairing")|tojson }},
+  connecting: {{ t("bluetooth.connecting")|tojson }},
+  disconnecting: {{ t("bluetooth.disconnecting")|tojson }},
+  confirm_remove: {{ t("bluetooth.confirm_remove")|tojson }},
+  removing: {{ t("bluetooth.removing")|tojson }},
+  bt_label: {{ t("bluetooth.bt_label")|tojson }},
+  speaker_label: {{ t("bluetooth.speaker_label")|tojson }},
+  switching: {{ t("bluetooth.switching")|tojson }},
+  bt_device: {{ t("bluetooth.bt_device")|tojson }},
+  local_speaker: {{ t("bluetooth.local_speaker")|tojson }},
+};
+
+function addLog(msg, ok, cls) {
+  var log = document.getElementById('bt-log');
+  var c = cls || (ok ? 'bt-ok' : 'bt-err');
+  var time = new Date().toLocaleTimeString('de-DE');
+  log.innerHTML = '<div class="bt-entry ' + c + '">[' + time + '] ' + msg + '</div>' + log.innerHTML;
+}
+
+function scanDevices() {
+  document.getElementById('scan-spinner').style.display = '';
+  document.getElementById('scan-table').style.display = 'none';
+  document.getElementById('btn-scan').disabled = true;
+  addLog(_tp.scanning, true, 'bt-info');
+
+  fetch('/bluetooth/scan').then(function(r) {
+    if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || 'Scan failed'); });
+    return r.json();
+  }).then(function(devices) {
+    document.getElementById('scan-spinner').style.display = 'none';
+    document.getElementById('btn-scan').disabled = false;
+    var body = document.getElementById('scan-body');
+    body.innerHTML = '';
+    if (devices.length === 0) {
+      addLog(_tp.no_devices, false, 'bt-info');
+      return;
+    }
+    document.getElementById('scan-table').style.display = '';
+    addLog(_tp.devices_found.replace('{count}', devices.length), true);
+    devices.forEach(function(dev) {
+      var tr = document.createElement('tr');
+      var status = dev.paired ? _tp.paired : _tp.new_device;
+      if (dev.connected) status = _tp.connected;
+      var actions = '';
+      if (!dev.paired) {
+        actions = '<button class="btn btn-primary btn-sm" onclick="pairDevice(\'' + dev.mac + '\')">' + escHtml(_tp.pair) + '</button>';
+      } else if (!dev.connected) {
+        actions = '<button class="btn btn-success btn-sm" onclick="connectDevice(\'' + dev.mac + '\')">' + escHtml(_tp.connect) + '</button>';
+      } else {
+        actions = '<button class="btn btn-info btn-sm" onclick="switchAudio(\'bluetooth\',\'' + dev.mac + '\')">&#128266; ' + escHtml(_tp.audio) + '</button>';
+      }
+      tr.innerHTML = '<td>' + escHtml(dev.name) + '</td><td><code>' + dev.mac + '</code></td><td>' + escHtml(status) + '</td><td>' + actions + '</td>';
+      body.appendChild(tr);
+    });
+  }).catch(function(e) {
+    document.getElementById('scan-spinner').style.display = 'none';
+    document.getElementById('btn-scan').disabled = false;
+    addLog(_tp.error_msg.replace('{msg}', e.message), false);
+  });
+}
+
+function escHtml(s) {
+  var d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function pairDevice(mac) {
+  addLog(_tp.pairing.replace('{mac}', mac), true, 'bt-info');
+  fetch('/bluetooth/pair', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({mac: mac})
+  }).then(function(r) { return r.json(); })
+    .then(function(d) {
+      addLog(d.message, d.ok);
+      if (d.ok) setTimeout(function() { location.reload(); }, 1500);
+    }).catch(function(e) { addLog(_tp.error_msg.replace('{msg}', e), false); });
+}
+
+function connectDevice(mac) {
+  addLog(_tp.connecting.replace('{mac}', mac), true, 'bt-info');
+  fetch('/bluetooth/connect', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({mac: mac})
+  }).then(function(r) { return r.json(); })
+    .then(function(d) {
+      addLog(d.message, d.ok);
+      if (d.ok) setTimeout(function() { location.reload(); }, 1500);
+    }).catch(function(e) { addLog(_tp.error_msg.replace('{msg}', e), false); });
+}
+
+function disconnectDevice(mac) {
+  addLog(_tp.disconnecting.replace('{mac}', mac), true, 'bt-info');
+  fetch('/bluetooth/disconnect', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({mac: mac})
+  }).then(function(r) { return r.json(); })
+    .then(function(d) {
+      addLog(d.message, d.ok);
+      if (d.ok) setTimeout(function() { location.reload(); }, 1500);
+    }).catch(function(e) { addLog(_tp.error_msg.replace('{msg}', e), false); });
+}
+
+function removeDevice(mac, name) {
+  if (!confirm(_tp.confirm_remove.replace('{name}', name))) return;
+  addLog(_tp.removing.replace('{name}', name), true, 'bt-info');
+  fetch('/bluetooth/remove', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({mac: mac})
+  }).then(function(r) { return r.json(); })
+    .then(function(d) {
+      addLog(d.message, d.ok);
+      if (d.ok) setTimeout(function() { location.reload(); }, 1500);
+    }).catch(function(e) { addLog(_tp.error_msg.replace('{msg}', e), false); });
+}
+
+function switchAudio(target, mac) {
+  var label = target === 'bluetooth' ? _tp.bt_label : _tp.speaker_label;
+  addLog(_tp.switching.replace('{label}', label), true, 'bt-info');
+  fetch('/bluetooth/switch', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({target: target, mac: mac})
+  }).then(function(r) { return r.json(); })
+    .then(function(d) {
+      addLog(d.message, d.ok);
+      if (d.ok) setTimeout(function() { location.reload(); }, 3000);
+    }).catch(function(e) { addLog(_tp.error_msg.replace('{msg}', e), false); });
+}
+
+// Status polling every 5 seconds
+setInterval(function() {
+  fetch('/bluetooth/status').then(function(r) { return r.json(); }).then(function(d) {
+    var el = document.getElementById('st-output');
+    if (d.active_output === 'bluetooth' && d.connected_device) {
+      el.innerHTML = '<span class="status-dot dot-blue"></span><strong>' + escHtml(_tp.bt_device.replace('{name}', d.connected_device.name)) + '</strong>';
+    } else {
+      el.innerHTML = '<span class="status-dot dot-green"></span><strong>' + escHtml(_tp.local_speaker) + '</strong>';
+    }
+  }).catch(function() {});
+}, 5000);
+</script>
+{% endblock %}

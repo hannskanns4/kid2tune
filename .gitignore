@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+venv/
+config.json
+sync_pending.json
+rfid_sync_v2.json
+*.tmp
+*.bak
+*.bak_*
+instal.bak
+install.bak*
+.claude/
+Phonibox_*.stl

@@ -1,0 +1,51 @@
+{
+  "version": "__VERSION__",
+  "language": "de",
+  "lms_host": "localhost",
+  "lms_port": 9000,
+  "lcd": {
+    "i2c_address": "0x27",
+    "cols": 20,
+    "rows": 4
+  },
+  "buttons": {
+    "vol_up":   __BTN_VOL_UP__,
+    "vol_down": __BTN_VOL_DOWN__,
+    "next":     __BTN_NEXT__,
+    "prev":     __BTN_PREV__,
+    "pause":         __BTN_PAUSE__,
+    "lcd_backlight": __BTN_LCD_BACKLIGHT__
+  },
+  "wifi": {
+    "ap_ssid": "__HOSTNAME__-kid2tune",
+    "ap_password": "Geheim123!",
+    "ap_channel": 7,
+    "check_interval": 30
+  },
+  "rfid_mappings": {},
+  "sync": {
+    "enabled": false,
+    "nas_share": "",
+    "username": "",
+    "password": "",
+    "mount_point": "/mnt/lms-sync",
+    "box_id": "__BOX_ID__"
+  },
+  "volume_max": 100,
+  "volume_schedule": {},
+  "alarms": [],
+  "auto_standby_minutes": 30,
+  "display_off_minutes": 30,
+  "shutdown": {
+    "hold_time": 5,
+    "confirm_timeout": 15
+  },
+  "bluetooth": {
+    "active_device": "",
+    "local_asound_conf": "",
+    "auto_reconnect": true,
+    "check_interval": 15
+  },
+  "known_boxes": {},
+  "github_token": ""
+}

@@ -1,0 +1,307 @@
+{% extends "base.html" %}
+{% block title %}WLAN-Verwaltung – kid2tune{% endblock %}
+{% block content %}
+<div class="container mt-4">
+
+  <!-- Connection status -->
+  <div class="card p-4 mb-4">
+    <h5>&#128225; {{ t("wifi.status_title") }}</h5>
+    <div class="row g-3">
+      <div class="col-md-3">
+        <div class="small text-muted">{{ t("wifi.mode") }}</div>
+        <div id="st-mode">
+          {% if status.mode == 'ap' %}
+            <span class="status-dot dot-yellow"></span><strong>{{ t("wifi.mode_ap") }}</strong>
+          {% elif status.connected %}
+            <span class="status-dot dot-green"></span><strong>{{ t("wifi.mode_client") }}</strong>
+          {% else %}
+            <span class="status-dot dot-red"></span><strong>{{ t("wifi.mode_disconnected") }}</strong>
+          {% endif %}
+        </div>
+      </div>
+      <div class="col-md-3">
+        <div class="small text-muted">{{ t("wifi.ssid") }}</div>
+        <div><strong id="st-ssid">{{ status.ssid or '–' }}</strong></div>
+      </div>
+      <div class="col-md-3">
+        <div class="small text-muted">{{ t("wifi.ip_address") }}</div>
+        <div><strong id="st-ip">{{ status.ip or '–' }}</strong></div>
+      </div>
+      <div class="col-md-3">
+        <div class="small text-muted">{{ t("wifi.signal") }}</div>
+        <div id="st-signal">{{ status.signal }} {{ t("wifi.dbm") }}</div>
+      </div>
+    </div>
+    <div class="mt-3">
+      {% if status.mode == 'ap' %}
+        <button class="btn btn-outline-warning btn-sm" onclick="apAction('stop')">{{ t("wifi.stop_ap") }}</button>
+      {% else %}
+        <button class="btn btn-outline-info btn-sm" onclick="apAction('start')">{{ t("wifi.start_ap") }}</button>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Available networks -->
+  <div class="card p-4 mb-4">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <h5 class="mb-0">&#128246; {{ t("wifi.networks_title") }}</h5>
+      <button class="btn btn-outline-info btn-sm" onclick="scanNetworks()" id="btn-scan">{{ t("wifi.scan_networks") }}</button>
+    </div>
+    <div id="scan-spinner" class="text-center py-3" style="display:none;">
+      <div class="spinner-border text-info spinner-border-sm"></div> {{ t("wifi.scanning") }}
+    </div>
+    <table class="table table-dark table-hover" id="scan-table" style="display:none;">
+      <thead><tr><th>{{ t("wifi.ssid") }}</th><th>{{ t("wifi.signal") }}</th><th>{{ t("wifi.security") }}</th><th></th></tr></thead>
+      <tbody id="scan-body"></tbody>
+    </table>
+    <p class="text-muted small" id="scan-hint">{{ t("wifi.scan_hint") }}</p>
+  </div>
+
+  <!-- Connect to network (always visible, including in AP mode) -->
+  <div class="card p-4 mb-4" id="connect-card">
+    <h5>&#128274; {{ t("wifi.connect_title") }}</h5>
+    <p class="text-muted small">{{ t("wifi.connect_desc") }}</p>
+    <div class="row g-2">
+      <div class="col-md-4">
+        <label class="form-label small">{{ t("wifi.ssid_label") }}</label>
+        <input type="text" class="form-control" id="connect-ssid" placeholder="{{ t("wifi.ssid_placeholder") }}">
+      </div>
+      <div class="col-md-4">
+        <label class="form-label small">{{ t("wifi.password_label") }}</label>
+        <input type="password" class="form-control" id="connect-password" placeholder="{{ t("wifi.password_placeholder") }}">
+      </div>
+      <div class="col-md-4 d-flex align-items-end">
+        <button class="btn btn-success" onclick="connectNetwork()">{{ t("common.connect") }}</button>
+      </div>
+    </div>
+    <p class="text-muted small mt-2 mb-0">{{ t("wifi.ap_hint") }}</p>
+  </div>
+
+  <!-- Known networks -->
+  <div class="card p-4 mb-4">
+    <h5>&#128203; {{ t("wifi.known_title") }}</h5>
+    {% if known %}
+    <table class="table table-dark table-hover">
+      <thead><tr><th>{{ t("wifi.ssid") }}</th><th>{{ t("wifi.security") }}</th><th></th></tr></thead>
+      <tbody>
+        {% for net in known %}
+        <tr>
+          <td>{{ net.ssid | e }}</td>
+          <td>{{ net.key_mgmt | e }}</td>
+          <td>
+            <button class="btn btn-danger btn-sm" data-ssid="{{ net.ssid | e }}"
+                    onclick="forgetNetwork(this.dataset.ssid)">{{ t("wifi.forget") }}</button>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="text-muted">{{ t("wifi.no_known") }}</p>
+    {% endif %}
+  </div>
+
+  <!-- AP configuration -->
+  <div class="card p-4 mb-4">
+    <h5>&#128225; {{ t("wifi.ap_title") }}</h5>
+    <p class="text-muted small">{{ t("wifi.ap_desc") }}</p>
+    <div class="row g-3">
+      <div class="col-md-3">
+        <label class="form-label small">{{ t("wifi.ap_ssid_label") }}</label>
+        <input type="text" class="form-control" id="ap-ssid" value="{{ wifi.get('ap_ssid', '') }}">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label small">{{ t("wifi.ap_password_label") }}</label>
+        <input type="text" class="form-control" id="ap-password" value="{{ wifi.get('ap_password', '') }}">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label small">{{ t("wifi.channel") }}</label>
+        <select class="form-select" id="ap-channel">
+          {% for ch in range(1, 14) %}
+          <option value="{{ ch }}" {% if wifi.get('ap_channel', 7) == ch %}selected{% endif %}>{{ ch }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-2">
+        <label class="form-label small">{{ t("wifi.check_interval") }}</label>
+        <input type="number" class="form-control" id="ap-interval"
+               value="{{ wifi.get('check_interval', 30) }}" min="10" max="300">
+      </div>
+      <div class="col-md-2 d-flex align-items-end">
+        <button class="btn btn-success" onclick="saveApConfig()">{{ t("common.save") }}</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Log -->
+  <div class="card p-4">
+    <h5>&#128221; {{ t("common.protocol") }}</h5>
+    <div id="wifi-log"></div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const _tp = {
+  mode_ap: {{ t("wifi.mode_ap")|tojson }},
+  mode_client: {{ t("wifi.mode_client")|tojson }},
+  mode_disconnected: {{ t("wifi.mode_disconnected")|tojson }},
+  dbm: {{ t("wifi.dbm")|tojson }},
+  connect: {{ t("common.connect")|tojson }},
+  no_networks: {{ t("wifi.no_networks")|tojson }},
+  scan_fail: {{ t("wifi.scan_fail")|tojson }},
+  ssid_required: {{ t("wifi.ssid_required")|tojson }},
+  connecting: {{ t("wifi.connecting")|tojson }},
+  confirm_forget: {{ t("wifi.confirm_forget")|tojson }},
+  ap_action: {{ t("wifi.ap_action")|tojson }},
+  error: {{ t("common.error")|tojson }}
+};
+
+function addLog(msg, ok, cls) {
+  const log = document.getElementById('wifi-log');
+  const c = cls || (ok ? 'wifi-ok' : 'wifi-err');
+  const time = new Date().toLocaleTimeString('de-DE');
+  log.innerHTML = '<div class="wifi-entry ' + c + '">[' + time + '] ' + msg + '</div>' + log.innerHTML;
+}
+
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function signalBars(dbm) {
+  // -30 = perfect, -90 = poor
+  const strength = Math.max(0, Math.min(4, Math.round((dbm + 90) / 15)));
+  let html = '';
+  for(let i=0;i<4;i++){
+    const h = 4 + i*4;
+    const cls = i < strength ? '' : ' signal-weak';
+    html += '<span class="signal-bar' + cls + '" style="height:' + h + 'px"></span>';
+  }
+  return html + ' <span class="small">' + dbm + ' ' + _tp.dbm + '</span>';
+}
+
+function scanNetworks() {
+  document.getElementById('scan-spinner').style.display = '';
+  document.getElementById('scan-hint').style.display = 'none';
+  document.getElementById('scan-table').style.display = 'none';
+  document.getElementById('btn-scan').disabled = true;
+
+  fetch('/wifi/scan').then(r => {
+    if(!r.ok) return r.json().then(d => { throw new Error(d.error || _tp.scan_fail.replace('{error}', '')); });
+    return r.json();
+  }).then(networks => {
+    const body = document.getElementById('scan-body');
+    body.innerHTML = '';
+    networks.forEach(net => {
+      const tr = document.createElement('tr');
+      const tdSsid = document.createElement('td');
+      tdSsid.textContent = net.ssid;
+      const tdSignal = document.createElement('td');
+      tdSignal.innerHTML = signalBars(net.signal);
+      const tdSec = document.createElement('td');
+      tdSec.innerHTML = '<span class="badge bg-secondary">' + escHtml(net.security) + '</span>';
+      const tdBtn = document.createElement('td');
+      const btn = document.createElement('button');
+      btn.className = 'btn btn-primary btn-sm';
+      btn.textContent = _tp.connect;
+      btn.addEventListener('click', () => showConnect(net.ssid));
+      tdBtn.appendChild(btn);
+      tr.appendChild(tdSsid);
+      tr.appendChild(tdSignal);
+      tr.appendChild(tdSec);
+      tr.appendChild(tdBtn);
+      body.appendChild(tr);
+    });
+    document.getElementById('scan-spinner').style.display = 'none';
+    document.getElementById('scan-table').style.display = '';
+    document.getElementById('btn-scan').disabled = false;
+    if(networks.length === 0) {
+      body.innerHTML = '<tr><td colspan="4" class="text-muted text-center">' + _tp.no_networks + '</td></tr>';
+    }
+  }).catch(e => {
+    document.getElementById('scan-spinner').style.display = 'none';
+    document.getElementById('btn-scan').disabled = false;
+    addLog(_tp.scan_fail.replace('{error}', e), false);
+  });
+}
+
+function showConnect(ssid) {
+  document.getElementById('connect-ssid').value = ssid;
+  document.getElementById('connect-password').value = '';
+  document.getElementById('connect-password').focus();
+}
+
+function connectNetwork() {
+  const ssid = document.getElementById('connect-ssid').value.trim();
+  const password = document.getElementById('connect-password').value;
+  if (!ssid) { alert(_tp.ssid_required); return; }
+  addLog(_tp.connecting.replace('{ssid}', ssid), true, 'wifi-info');
+
+  fetch('/wifi/connect', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ssid: ssid, password: password})
+  }).then(r => r.json()).then(d => {
+    addLog(d.message, d.ok);
+    if(d.ok) setTimeout(() => location.reload(), 3000);
+  }).catch(e => addLog(_tp.error + ': ' + e, false));
+}
+
+function forgetNetwork(ssid) {
+  if(!confirm(_tp.confirm_forget.replace('{ssid}', ssid))) return;
+  fetch('/wifi/forget', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ssid: ssid})
+  }).then(r => r.json()).then(d => {
+    addLog(d.message, d.ok);
+    if(d.ok) setTimeout(() => location.reload(), 1000);
+  }).catch(e => addLog(_tp.error + ': ' + e, false));
+}
+
+function apAction(action) {
+  addLog(_tp.ap_action.replace('{action}', action), true, 'wifi-info');
+  fetch('/wifi/ap/' + action, {method:'POST'})
+    .then(r => r.json())
+    .then(d => {
+      addLog(d.message, d.ok);
+      if(d.ok) setTimeout(() => location.reload(), 3000);
+    }).catch(e => addLog(_tp.error + ': ' + e, false));
+}
+
+function saveApConfig() {
+  const data = {
+    ap_ssid: document.getElementById('ap-ssid').value,
+    ap_password: document.getElementById('ap-password').value,
+    ap_channel: parseInt(document.getElementById('ap-channel').value),
+    check_interval: parseInt(document.getElementById('ap-interval').value),
+  };
+  fetch('/wifi/ap/save', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(data)
+  }).then(r => r.json()).then(d => {
+    addLog(d.message, d.ok);
+  }).catch(e => addLog(_tp.error + ': ' + e, false));
+}
+
+// Periodically update status
+setInterval(() => {
+  fetch('/wifi/status').then(r=>r.json()).then(d => {
+    const mode = document.getElementById('st-mode');
+    if(d.mode === 'ap') {
+      mode.innerHTML = '<span class="status-dot dot-yellow"></span><strong>' + _tp.mode_ap + '</strong>';
+    } else if(d.connected) {
+      mode.innerHTML = '<span class="status-dot dot-green"></span><strong>' + _tp.mode_client + '</strong>';
+    } else {
+      mode.innerHTML = '<span class="status-dot dot-red"></span><strong>' + _tp.mode_disconnected + '</strong>';
+    }
+    document.getElementById('st-ssid').textContent = d.ssid || '–';
+    document.getElementById('st-ip').textContent = d.ip || '–';
+    document.getElementById('st-signal').innerHTML = d.signal ? signalBars(d.signal) : '–';
+  }).catch(()=>{});
+}, 5000);
+</script>
+{% endblock %}

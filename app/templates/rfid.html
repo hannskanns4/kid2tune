@@ -1,0 +1,251 @@
+{% extends "base.html" %}
+{% block title %}{{ t("nav.rfid") }} – {{ t("nav.brand") }}{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+
+  <!-- Live-Scan-Bereich -->
+  <div class="card p-3 mb-4">
+    <h5>{{ t("rfid.title") }}</h5>
+    <p class="text-muted small">{{ t("rfid.instruction") }}</p>
+    <div id="scan-alert" class="alert alert-info">
+      {{ t("rfid.card_detected") }} <strong id="scan-uid"></strong>
+    </div>
+
+    <form method="POST" action="/rfid/assign" id="assign-form" enctype="multipart/form-data">
+      <input type="hidden" name="uid" id="form-uid">
+      <div class="row g-2">
+        <div class="col-md-3">
+          <input type="text" class="form-control bg-dark text-light" name="label" id="form-label"
+                 placeholder="{{ t("rfid.label_placeholder") }}" required>
+        </div>
+        <div class="col-md-2">
+          <select class="form-select bg-dark text-light" name="type" id="form-type" onchange="updateTypeHint()">
+            <option value="track">{{ t("rfid.type_song") }}</option>
+            <option value="album">{{ t("rfid.type_album") }}</option>
+            <option value="playlist">{{ t("rfid.type_playlist") }}</option>
+            <option value="url">{{ t("rfid.type_url") }}</option>
+            <option value="local">{{ t("rfid.type_file") }}</option>
+            <option value="bluetooth">{{ t("rfid.type_bluetooth") }}</option>
+            <option value="multiroom">{{ t("rfid.type_multiroom") }}</option>
+            <option value="sleep">{{ t("rfid.type_sleep") }}</option>
+            <option value="shutdown">{{ t("rfid.type_shutdown") }}</option>
+          </select>
+        </div>
+        <div class="col-md-5">
+          <div class="input-group" id="value-group">
+            <input type="text" class="form-control bg-dark text-light" name="value" id="form-value"
+                   placeholder="{{ t("rfid.id_placeholder") }}">
+            <button type="button" class="btn btn-outline-info" onclick="doSearch()">{{ t("common.search") }}</button>
+          </div>
+          <div id="file-group" style="display:none;">
+            <input type="file" class="form-control bg-dark text-light" name="music_file" id="form-file"
+                   accept=".mp3,.wav,.flac,.ogg,.m4a,.aac,.wma">
+            <div class="form-text">{{ t("rfid.file_hint") }}</div>
+          </div>
+          <div id="search-results" class="list-group mt-1" style="position:absolute;z-index:999;max-height:200px;overflow-y:auto;"></div>
+        </div>
+        <div class="col-md-2">
+          <div class="form-check mb-2">
+            <input class="form-check-input" type="checkbox" name="resume" id="form-resume" value="1">
+            <label class="form-check-label small text-muted" for="form-resume">{{ t("rfid.remember_pos") }}</label>
+          </div>
+          <button type="submit" class="btn btn-success w-100" id="assign-btn" disabled>{{ t("rfid.assign") }}</button>
+        </div>
+      </div>
+    </form>
+  </div>
+
+  <!-- Bestehende Mappings -->
+  <div class="card p-3">
+    <h5>{{ t("rfid.stored_title") }}</h5>
+    {% if mappings %}
+    <table class="table table-dark table-hover">
+      <thead><tr><th>{{ t("rfid.col_uid") }}</th><th>{{ t("rfid.col_label") }}</th><th>{{ t("rfid.col_type") }}</th><th>{{ t("rfid.col_value") }}</th><th>{{ t("rfid.col_box_time") }}</th><th>{{ t("rfid.col_actions") }}</th></tr></thead>
+      <tbody>
+        {% for uid, entry in mappings.items() %}
+        <tr id="row-{{ uid }}">
+          <td><code>{{ uid }}</code></td>
+          <td>{{ entry.label }}</td>
+          <td><span class="badge bg-secondary">{{ entry.type }}</span></td>
+          <td class="text-truncate" style="max-width:180px" title="{{ entry.value }}">{{ entry.value }}</td>
+          <td class="small text-muted">
+            {% if entry.updated_by %}{{ entry.updated_by }}{% endif %}
+            {% if entry.updated_at %}<br>{{ entry.updated_at[:16] | replace('T',' ') }}{% endif %}
+          </td>
+          <td>
+            <div class="d-flex gap-1">
+              <button class="btn btn-success btn-sm" onclick="playCard('{{ uid }}')" title="{{ t("common.play") }}">&#9654;</button>
+              <button class="btn btn-warning btn-sm" onclick="toggleEdit('{{ uid }}')" title="{{ t("common.edit") }}">&#9998;</button>
+              <form method="POST" action="/rfid/delete/{{ uid }}" onsubmit="return confirm(_tp.confirm_delete)" class="d-inline">
+                <button class="btn btn-danger btn-sm" title="{{ t("common.delete") }}">&#128465;</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        <tr id="edit-{{ uid }}" style="display:none;" class="table-active">
+          <td colspan="6">
+            <form method="POST" action="/rfid/edit/{{ uid }}" class="row g-2 align-items-end">
+              <div class="col-md-3">
+                <label class="form-label small">{{ t("rfid.col_label") }}</label>
+                <input type="text" class="form-control form-control-sm bg-dark text-light" name="label"
+                       value="{{ entry.label }}" required>
+              </div>
+              <div class="col-md-2">
+                <label class="form-label small">{{ t("rfid.col_type") }}</label>
+                <select class="form-select form-select-sm bg-dark text-light" name="type">
+                  <option value="track" {% if entry.type=='track' %}selected{% endif %}>{{ t("rfid.type_song") }}</option>
+                  <option value="album" {% if entry.type=='album' %}selected{% endif %}>{{ t("rfid.type_album") }}</option>
+                  <option value="playlist" {% if entry.type=='playlist' %}selected{% endif %}>{{ t("rfid.type_playlist") }}</option>
+                  <option value="url" {% if entry.type=='url' %}selected{% endif %}>{{ t("rfid.type_url") }}</option>
+                  <option value="local" {% if entry.type=='local' %}selected{% endif %}>{{ t("rfid.type_file") }}</option>
+                  <option value="bluetooth" {% if entry.type=='bluetooth' %}selected{% endif %}>{{ t("rfid.type_bluetooth") }}</option>
+                  <option value="multiroom" {% if entry.type=='multiroom' %}selected{% endif %}>{{ t("rfid.type_multiroom") }}</option>
+                  <option value="sleep" {% if entry.type=='sleep' %}selected{% endif %}>{{ t("rfid.type_sleep") }}</option>
+                  <option value="shutdown" {% if entry.type=='shutdown' %}selected{% endif %}>{{ t("rfid.type_shutdown") }}</option>
+                </select>
+              </div>
+              <div class="col-md-4">
+                <label class="form-label small">{{ t("rfid.col_value") }}</label>
+                <input type="text" class="form-control form-control-sm bg-dark text-light" name="value"
+                       value="{{ entry.value }}" required>
+              </div>
+              <div class="col-md-3">
+                <div class="form-check mb-1">
+                  <input class="form-check-input" type="checkbox" name="resume" value="1"
+                         {% if entry.resume %}checked{% endif %}>
+                  <label class="form-check-label small">{{ t("rfid.remember_pos") }}</label>
+                </div>
+                <button type="submit" class="btn btn-success btn-sm">{{ t("common.save") }}</button>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="toggleEdit('{{ uid }}')">{{ t("common.cancel") }}</button>
+              </div>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="text-muted">{{ t("rfid.no_cards") }}</p>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const _tp = {
+  confirm_delete: {{ t("common.confirm_delete")|tojson }},
+  error_msg:      {{ t("common.error_msg")|tojson }},
+  hint_song:      {{ t("rfid.hint_song")|tojson }},
+  hint_album:     {{ t("rfid.hint_album")|tojson }},
+  hint_playlist:  {{ t("rfid.hint_playlist")|tojson }},
+  hint_url:       {{ t("rfid.hint_url")|tojson }},
+  hint_file:      {{ t("rfid.hint_file")|tojson }},
+  hint_bluetooth: {{ t("rfid.hint_bluetooth")|tojson }},
+  hint_multiroom: {{ t("rfid.hint_multiroom")|tojson }},
+  hint_sleep:     {{ t("rfid.hint_sleep")|tojson }},
+  hint_shutdown:  {{ t("rfid.hint_shutdown")|tojson }}
+};
+function playCard(uid){
+  fetch('/rfid/play/'+uid, {method:'POST'})
+    .then(r=>r.json()).then(d=>{
+      const el = document.getElementById('row-'+uid);
+      if(d.ok){
+        el.style.outline='2px solid #4ade80';
+        setTimeout(()=>{ el.style.outline=''; }, 1500);
+      } else { alert(_tp.error_msg.replace('{msg}', d.message)); }
+    }).catch(e=>alert(_tp.error_msg.replace('{msg}', e)));
+}
+function toggleEdit(uid){
+  const editRow = document.getElementById('edit-'+uid);
+  editRow.style.display = editRow.style.display==='none' ? '' : 'none';
+}
+let pollInterval = setInterval(pollScan, 2000);
+function pollScan(){
+  fetch('/rfid/scan').then(r=>r.json()).then(d=>{
+    if(d.uid){
+      document.getElementById('scan-alert').style.display='block';
+      document.getElementById('scan-uid').textContent = d.uid;
+      document.getElementById('form-uid').value = d.uid;
+      document.getElementById('form-label').placeholder = d.uid;
+      document.getElementById('assign-btn').disabled = false;
+      if(!document.getElementById('form-label').value)
+        document.getElementById('form-label').value = d.uid;
+    }
+  });
+}
+function updateTypeHint(){
+  const t = document.getElementById('form-type').value;
+  const v = document.getElementById('form-value');
+  const vg = document.getElementById('value-group');
+  const fg = document.getElementById('file-group');
+  const hints = {
+    track:     _tp.hint_song,
+    album:     _tp.hint_album,
+    playlist:  _tp.hint_playlist,
+    url:       _tp.hint_url,
+    local:     _tp.hint_file,
+    bluetooth: _tp.hint_bluetooth,
+    multiroom: _tp.hint_multiroom,
+    sleep:     _tp.hint_sleep,
+    shutdown:  _tp.hint_shutdown,
+  };
+  if(t === 'local') {
+    fg.style.display = ''; vg.style.display = 'none'; v.removeAttribute('required');
+  } else if(t === 'multiroom') {
+    fg.style.display = 'none'; vg.style.display = 'none'; v.value = 'sync'; v.removeAttribute('required');
+  } else if(t === 'shutdown') {
+    fg.style.display = 'none'; vg.style.display = 'none'; v.value = 'shutdown'; v.removeAttribute('required');
+  } else {
+    fg.style.display = 'none'; vg.style.display = ''; v.placeholder = hints[t] || '';
+  }
+  if(t === 'bluetooth') {
+    fetch('/bluetooth/status').then(r=>r.json()).then(d=>{
+      if(d.paired_devices && d.paired_devices.length) {
+        const box = document.getElementById('search-results');
+        box.innerHTML='';
+        d.paired_devices.forEach(dev=>{
+          const a = document.createElement('a');
+          a.href='#'; a.className='list-group-item list-group-item-action list-group-item-dark py-1';
+          a.textContent = dev.name + ' (' + dev.mac + ')';
+          a.onclick = e=>{ e.preventDefault();
+            document.getElementById('form-value').value = dev.mac;
+            if(!document.getElementById('form-label').value || document.getElementById('form-label').value.startsWith('Karte '))
+              document.getElementById('form-label').value = 'BT: ' + dev.name;
+            box.innerHTML=''; };
+          box.appendChild(a);
+        });
+      }
+    });
+  }
+}
+function doSearch(){
+  const q = document.getElementById('form-value').value.trim();
+  const t = document.getElementById('form-type').value;
+  if(!q || t==='url') return;
+  const typeMap = {track:'tracks', album:'albums', playlist:'playlists'};
+  fetch('/api/lms/search?q='+encodeURIComponent(q)+'&type='+typeMap[t])
+    .then(r=>r.json()).then(items=>{
+      const box = document.getElementById('search-results');
+      box.innerHTML='';
+      (Array.isArray(items)?items:[]).slice(0,20).forEach(item=>{
+        const id = item.id || '';
+        const title = item.title || item.name || item.playlist || id;
+        const a = document.createElement('a');
+        a.href='#'; a.className='list-group-item list-group-item-action list-group-item-dark py-1';
+        a.textContent = title;
+        a.onclick = e=>{ e.preventDefault();
+          document.getElementById('form-value').value = id;
+          document.getElementById('form-label').value = document.getElementById('form-label').value || title;
+          box.innerHTML=''; };
+        box.appendChild(a);
+      });
+    });
+}
+document.addEventListener('click', e=>{
+  if(!e.target.closest('#search-results') && !e.target.closest('#form-value'))
+    document.getElementById('search-results').innerHTML='';
+});
+</script>
+{% endblock %}
