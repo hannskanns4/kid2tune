@@ -250,6 +250,39 @@ def _has_internet() -> bool:
     return _internet_cache
 
 
+_update_available = False
+_update_check_time = 0
+_UPDATE_CHECK_INTERVAL = 1800  # 30 minutes
+
+
+def _check_update_background():
+    """Check for updates in a background thread (non-blocking)."""
+    global _update_available, _update_check_time
+    try:
+        import update_manager
+        result = update_manager.check_for_update()
+        _update_available = result.get("update_available", False)
+    except Exception:
+        _update_available = False
+    _update_check_time = time.time()
+
+
+def _get_status_line() -> str:
+    """Returns 'Online', 'Update available' or 'Local'."""
+    global _update_check_time
+    if not _has_internet():
+        return "Local"
+    # Trigger background update check periodically
+    now = time.time()
+    if (now - _update_check_time) >= _UPDATE_CHECK_INTERVAL:
+        _update_check_time = now  # Prevent re-triggering
+        import threading
+        threading.Thread(target=_check_update_background, daemon=True).start()
+    if _update_available:
+        return "Update available"
+    return "Online"
+
+
 def get_ip() -> str:
     """Determines the current IP address (works even without internet)."""
     # Method 1: UDP socket (no internet needed, just routing table)
@@ -582,7 +615,7 @@ def main():
                     line1 = truncate(fqdn, cols)
                 else:
                     line1 = truncate(get_ip(), cols)
-                line2 = ("Online" if _has_internet() else "Local").center(cols)
+                line2 = _get_status_line().center(cols)
                 line3 = get_system_status(cols)
             else:
                 # Build mode string

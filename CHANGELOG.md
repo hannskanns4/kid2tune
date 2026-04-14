@@ -3,6 +3,13 @@
 All notable changes to this project are documented here.
 Versioning: **X.Y.Z** — X = major, Y = feature, Z = bugfix.
 
+## [2.8.1] – 2026-04-14
+
+### Added
+- LCD idle screen shows "Update available" instead of "Online" when a new version is on GitHub
+- Update check runs automatically in background every 30 minutes (non-blocking)
+- Shows "Local" when offline (no update check possible)
+
 ## [2.8.0] – 2026-04-14
 
 ### Added
