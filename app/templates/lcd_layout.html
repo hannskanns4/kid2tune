@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+{% block title %}{{ t("lcd_layout.title") }} – kid2tune{% endblock %}
+{% block content %}
+<div class="container mt-4">
+  <div class="card p-4 mb-3">
+    <h5>{{ t("lcd_layout.title") }}</h5>
+    <p class="text-muted small">{{ t("lcd_layout.desc") }}</p>
+
+    <!-- Preview -->
+    <div class="mb-3">
+      <label class="form-label small text-muted">{{ t("lcd_layout.preview") }}</label>
+      <div id="lcd-preview" style="background:#1a1a00; color:#9dff00; font-family:'Courier New',monospace; font-size:1.1rem; padding:12px 16px; border-radius:8px; border:2px solid #333; line-height:1.6; letter-spacing:2px; width:fit-content;">
+        <div id="prev-0">--------------------</div>
+        <div id="prev-1">--------------------</div>
+        <div id="prev-2">--------------------</div>
+        <div id="prev-3">--------------------</div>
+      </div>
+    </div>
+
+    <!-- 4 line editors -->
+    <div class="row g-3">
+      {% for i in range(4) %}
+      <div class="col-12">
+        <label class="form-label small">{{ t("lcd_layout.line") }} {{ i + 1 }}</label>
+        <div class="input-group">
+          <input type="text" class="form-control" id="line-{{ i }}" value="{{ play_layout[i] if i < play_layout|length else '' }}" maxlength="60" oninput="updatePreview()">
+          <button class="btn btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown">+</button>
+          <ul class="dropdown-menu dropdown-menu-end">
+            <li><a class="dropdown-item" href="#" onclick="insertVar({{ i }},'{title}')">&#127925; {title}</a></li>
+            <li><a class="dropdown-item" href="#" onclick="insertVar({{ i }},'{artist}')">&#127908; {artist}</a></li>
+            <li><a class="dropdown-item" href="#" onclick="insertVar({{ i }},'{album}')">&#128191; {album}</a></li>
+            <li><hr class="dropdown-divider"></li>
+            <li><a class="dropdown-item" href="#" onclick="insertVar({{ i }},'{elapsed}')">&#9200; {elapsed}</a></li>
+            <li><a class="dropdown-item" href="#" onclick="insertVar({{ i }},'{duration}')">&#8986; {duration}</a></li>
+            <li><a class="dropdown-item" href="#" onclick="insertVar({{ i }},'{volume}')">&#128266; {volume}</a></li>
+            <li><a class="dropdown-item" href="#" onclick="insertVar({{ i }},'{mode}')">&#9654; {mode}</a></li>
+            <li><hr class="dropdown-divider"></li>
+            <li><a class="dropdown-item" href="#" onclick="insertVar({{ i }},'{date}')">&#128197; {date}</a></li>
+            <li><a class="dropdown-item" href="#" onclick="insertVar({{ i }},'{time}')">&#128336; {time}</a></li>
+            <li><a class="dropdown-item" href="#" onclick="insertVar({{ i }},'{hostname}')">&#128187; {hostname}</a></li>
+            <li><a class="dropdown-item" href="#" onclick="insertVar({{ i }},'{ip}')">&#127760; {ip}</a></li>
+            <li><a class="dropdown-item" href="#" onclick="insertVar({{ i }},'{status}')">&#128994; {status}</a></li>
+          </ul>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <div class="mt-3 d-flex gap-2">
+      <button class="btn btn-success" onclick="saveLayout()">{{ t("common.save") }}</button>
+      <button class="btn btn-outline-secondary" onclick="resetLayout()">{{ t("lcd_layout.reset") }}</button>
+      <a href="/" class="btn btn-secondary">{{ t("common.back") }}</a>
+    </div>
+
+    <div class="mt-3 alert alert-info small">
+      <strong>{{ t("lcd_layout.variables_title") }}</strong><br>
+      <code>{title}</code> {{ t("lcd_layout.var_title") }} &bull;
+      <code>{artist}</code> {{ t("lcd_layout.var_artist") }} &bull;
+      <code>{album}</code> {{ t("lcd_layout.var_album") }} &bull;
+      <code>{elapsed}</code> {{ t("lcd_layout.var_elapsed") }} &bull;
+      <code>{duration}</code> {{ t("lcd_layout.var_duration") }} &bull;
+      <code>{volume}</code> {{ t("lcd_layout.var_volume") }} &bull;
+      <code>{mode}</code> {{ t("lcd_layout.var_mode") }} &bull;
+      <code>{date}</code> {{ t("lcd_layout.var_date") }} &bull;
+      <code>{time}</code> {{ t("lcd_layout.var_time") }} &bull;
+      <code>{hostname}</code> {{ t("lcd_layout.var_hostname") }} &bull;
+      <code>{ip}</code> {{ t("lcd_layout.var_ip") }} &bull;
+      <code>{status}</code> {{ t("lcd_layout.var_status") }}
+      <br><br>
+      <em>{{ t("lcd_layout.scroll_hint") }}</em>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const LCD_COLS = 20;
+const defaultLayout = ['{title}', '{artist}', '{elapsed}/{duration}  {mode}', '{date}  {time}'];
+const exampleVars = {
+  title: 'Twinkle Twinkle Star',
+  artist: 'Kids Songs',
+  album: 'Lullabies Vol.3',
+  elapsed: '02:34',
+  duration: '04:12',
+  volume: '65',
+  mode: '\u25b6PLAY',
+  date: new Date().toLocaleDateString('de-DE', {day:'2-digit',month:'2-digit',year:'numeric'}),
+  time: new Date().toLocaleTimeString('de-DE'),
+  hostname: location.hostname || 'kid2tune',
+  ip: '192.168.1.42',
+  status: 'Online'
+};
+
+function renderLine(template){
+  let line = template;
+  for(const [k,v] of Object.entries(exampleVars)){
+    line = line.replaceAll('{'+k+'}', v);
+  }
+  if(line.length > LCD_COLS) line = line.substring(0, LCD_COLS-1) + '\u2026';
+  return line.padEnd(LCD_COLS).substring(0, LCD_COLS);
+}
+
+function updatePreview(){
+  for(let i=0; i<4; i++){
+    const val = document.getElementById('line-'+i).value;
+    document.getElementById('prev-'+i).textContent = renderLine(val);
+  }
+}
+
+function insertVar(lineIdx, varName){
+  const input = document.getElementById('line-'+lineIdx);
+  const pos = input.selectionStart || input.value.length;
+  input.value = input.value.substring(0, pos) + varName + input.value.substring(pos);
+  input.focus();
+  updatePreview();
+}
+
+function saveLayout(){
+  const layout = [];
+  for(let i=0; i<4; i++){
+    layout.push(document.getElementById('line-'+i).value);
+  }
+  fetch('/lcd-layout/save',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({play_layout:layout})
+  }).then(r=>r.json()).then(d=>{
+    if(d.ok) alert({{ t("lcd_layout.saved")|tojson }});
+    else alert(d.message);
+  });
+}
+
+function resetLayout(){
+  for(let i=0; i<4; i++){
+    document.getElementById('line-'+i).value = defaultLayout[i];
+  }
+  updatePreview();
+}
+
+updatePreview();
+</script>
+{% endblock %}

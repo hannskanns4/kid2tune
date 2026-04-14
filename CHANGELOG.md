@@ -3,6 +3,16 @@
 All notable changes to this project are documented here.
 Versioning: **X.Y.Z** — X = major, Y = feature, Z = bugfix.
 
+## [2.8.0] – 2026-04-14
+
+### Added
+- **LCD Play Layout Editor**: Customize the 4 LCD lines during playback via web UI
+  - Drag & drop variables: `{title}`, `{artist}`, `{album}`, `{elapsed}`, `{duration}`, `{volume}`, `{mode}`, `{date}`, `{time}`, `{hostname}`, `{ip}`, `{status}`
+  - Live preview with example data
+  - Lines with `{title}` or `{artist}` scroll automatically
+  - New nav item "LCD" in menu bar
+  - Config stored in `lcd.play_layout` in config.json
+
 ## [2.7.1] – 2026-04-14
 
 ### Changed
