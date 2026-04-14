@@ -35,6 +35,7 @@
     "wifi": "WLAN",
     "bluetooth": "Bluetooth",
     "buttons": "Buttons",
+    "lcd_layout": "LCD",
     "settings": "Settings",
     "lms": "LMS",
     "lms_title": "Lyrion Music Server öffnen",
@@ -543,5 +544,27 @@
     "unsafe_path": "Unsicherer Pfad: {name}",
     "symlink": "Symlinks nicht erlaubt: {name}",
     "traversal": "Pfad-Traversal: {name}"
+  },
+  "lcd_layout": {
+    "title": "LCD-Layout (Play-Modus)",
+    "desc": "Gestalte die 4 Zeilen des LCD-Displays während der Wiedergabe. Variablen werden automatisch ersetzt.",
+    "preview": "Vorschau",
+    "line": "Zeile",
+    "reset": "Standard wiederherstellen",
+    "saved": "LCD-Layout gespeichert!",
+    "variables_title": "Verfügbare Variablen:",
+    "var_title": "Titel",
+    "var_artist": "Interpret",
+    "var_album": "Album",
+    "var_elapsed": "Spielzeit (MM:SS)",
+    "var_duration": "Gesamtlänge (MM:SS)",
+    "var_volume": "Lautstärke (%)",
+    "var_mode": "Play/Pause/Stop",
+    "var_date": "Datum",
+    "var_time": "Uhrzeit",
+    "var_hostname": "Hostname",
+    "var_ip": "IP-Adresse",
+    "var_status": "Online/Local",
+    "scroll_hint": "Zeilen mit {title} oder {artist} scrollen automatisch wenn der Text länger als 20 Zeichen ist."
   }
 }

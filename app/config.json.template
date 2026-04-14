@@ -6,7 +6,13 @@
   "lcd": {
     "i2c_address": "0x27",
     "cols": 20,
-    "rows": 4
+    "rows": 4,
+    "play_layout": [
+      "{title}",
+      "{artist}",
+      "{elapsed}/{duration}  {mode}",
+      "{date}  {time}"
+    ]
   },
   "buttons": {
     "vol_up":   __BTN_VOL_UP__,

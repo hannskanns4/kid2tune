@@ -145,6 +145,22 @@ class Scroller:
         return self._text[self._offset:self._offset + self.width].ljust(self.width)
 
 
+DEFAULT_PLAY_LAYOUT = [
+    "{title}",
+    "{artist}",
+    "{elapsed}/{duration}  {mode}",
+    "{date}  {time}",
+]
+
+
+def render_lcd_template(template: str, variables: dict, cols: int) -> str:
+    """Renders a single LCD line template with variable substitution."""
+    result = template
+    for key, val in variables.items():
+        result = result.replace("{" + key + "}", str(val))
+    return result[:cols].ljust(cols)
+
+
 BACKLIGHT_FILE = "/tmp/lcd_backlight"
 MULTIROOM_STATE = "/tmp/multiroom_active"
 SHUTDOWN_PENDING_FILE = "/tmp/lms_shutdown_pending"
@@ -569,21 +585,54 @@ def main():
                 line2 = ("Online" if _has_internet() else "Local").center(cols)
                 line3 = get_system_status(cols)
             else:
-                scroll_title.set_text(title)
-                scroll_artist.set_text(artist)
-                line1 = scroll_title.get_line()
-                line2 = scroll_artist.get_line()
-                status_str = CHAR_PLAY + "PLAY" if mode == "play" else CHAR_PAUSE + "PAUS" if mode == "pause" else "[STOP]"
-                # Show sleep timer countdown if active
+                # Build mode string
+                mode_str = CHAR_PLAY + "PLAY" if mode == "play" else CHAR_PAUSE + "PAUS" if mode == "pause" else "[STOP]"
                 sleep_file = "/tmp/lms_sleep_timer"
                 if os.path.exists(sleep_file):
                     try:
                         secs = int(open(sleep_file).read().strip())
-                        status_str = f"[ZZZ {secs//60}:{secs%60:02d}]"
+                        mode_str = f"[ZZZ {secs//60}:{secs%60:02d}]"
                     except Exception:
                         pass
-                time_info  = f"{fmt_time(ela)}/{fmt_time(dur)}"
-                line3 = f"{time_info}  {status_str}"[:cols].ljust(cols)
+
+                # Template variables
+                lcd_vars = {
+                    "title": title,
+                    "artist": artist,
+                    "album": status.get("album", ""),
+                    "elapsed": fmt_time(ela),
+                    "duration": fmt_time(dur),
+                    "volume": str(status.get("volume", 0)),
+                    "mode": mode_str,
+                    "date": date_str,
+                    "time": time_str,
+                    "hostname": socket.gethostname(),
+                    "ip": get_ip(),
+                    "status": "Online" if _has_internet() else "Local",
+                }
+
+                # Render play layout from config (or default)
+                play_layout = cfg.get("lcd", {}).get("play_layout", DEFAULT_PLAY_LAYOUT)
+                rendered = []
+                for tmpl in play_layout[:4]:
+                    rendered.append(render_lcd_template(tmpl, lcd_vars, cols))
+
+                # Scrolling for lines that contain title or artist
+                if "{title}" in play_layout[0] if len(play_layout) > 0 else False:
+                    scroll_title.set_text(title)
+                    rendered[0] = scroll_title.get_line()
+                if "{artist}" in (play_layout[1] if len(play_layout) > 1 else ""):
+                    scroll_artist.set_text(artist)
+                    rendered[1] = scroll_artist.get_line()
+
+                # Pad to 4 lines
+                while len(rendered) < 4:
+                    rendered.append("".ljust(cols))
+
+                line0 = rendered[0]
+                line1 = rendered[1]
+                line2 = rendered[2]
+                line3 = rendered[3]
 
             lines = [line0, line1, line2, line3]
 

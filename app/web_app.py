@@ -398,6 +398,30 @@ def lms_search():
         return jsonify({"error": str(e)}), 500
 
 
+# ── LCD Layout ───────────────────────────────────────────────────────────────
+
+@app.route("/lcd-layout")
+def lcd_layout_page():
+    cfg = load_config()
+    lcd_cfg = cfg.get("lcd", {})
+    play_layout = lcd_cfg.get("play_layout", [
+        "{title}", "{artist}", "{elapsed}/{duration}  {mode}", "{date}  {time}"
+    ])
+    return render_template("lcd_layout.html", play_layout=play_layout)
+
+
+@app.route("/lcd-layout/save", methods=["POST"])
+def lcd_layout_save():
+    data = request.json or {}
+    lines = data.get("play_layout", [])
+    if not lines or len(lines) != 4:
+        return jsonify({"ok": False, "message": "4 lines required."}), 400
+    def _update(cfg):
+        cfg.setdefault("lcd", {})["play_layout"] = lines
+    config_manager.update_config(_update)
+    return jsonify({"ok": True})
+
+
 # ── Button Pin Management ───────────────────────────────────────────────────
 
 @app.route("/buttons")
