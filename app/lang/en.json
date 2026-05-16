@@ -554,6 +554,19 @@
     "restarting": "Restarting LMS...",
     "restart_started": "LMS server is restarting."
   },
+  "boot": {
+    "title": "Boot times (last cold boot)",
+    "desc": "Seconds from power-on until each service was ready. Recorded automatically at boot.",
+    "no_data": "No measurement yet — will be recorded on next reboot.",
+    "incomplete": "Measurement incomplete (timeout) — some services were not ready after 240 s.",
+    "total": "Total until playable",
+    "multi_user": "Multi-user target",
+    "lms_port_9000": "LMS port 9000",
+    "lms_rpc_ready": "LMS RPC ready",
+    "spotty_ready": "Spotty available",
+    "squeezelite": "Squeezelite registered",
+    "kid2tune_web": "kid2tune web UI"
+  },
   "history": {
     "title": "Recently played",
     "desc": "The last 10 played items. Click the play button to play again.",

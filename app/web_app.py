@@ -1252,6 +1252,21 @@ def api_lms_plugins_update():
     })
 
 
+# ── Boot Timing ──────────────────────────────────────────────────────────────
+
+@app.route("/api/boot-timing")
+def api_boot_timing():
+    """Returns the last boot timing measurement (or {} if not yet recorded)."""
+    path = "/var/lib/lms-controller/boot_timing.json"
+    if not os.path.exists(path):
+        return jsonify({})
+    try:
+        with open(path) as f:
+            return jsonify(json.load(f))
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+
 # ── Language ─────────────────────────────────────────────────────────────────
 
 @app.route("/api/language", methods=["POST"])

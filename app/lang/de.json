@@ -554,6 +554,19 @@
     "restarting": "Starte LMS neu...",
     "restart_started": "LMS-Server wird neu gestartet."
   },
+  "boot": {
+    "title": "Boot-Zeiten (letzter Cold-Boot)",
+    "desc": "Sekunden ab Power-On bis jeder Service einsatzbereit war. Wird beim Booten automatisch erfasst.",
+    "no_data": "Noch keine Messung — beim nächsten Reboot wird automatisch erfasst.",
+    "incomplete": "Messung unvollständig (Timeout) — einzelne Services waren nach 240 s noch nicht bereit.",
+    "total": "Gesamt bis spielbar",
+    "multi_user": "Multi-User Target",
+    "lms_port_9000": "LMS Port 9000",
+    "lms_rpc_ready": "LMS RPC bereit",
+    "spotty_ready": "Spotty verfügbar",
+    "squeezelite": "Squeezelite registriert",
+    "kid2tune_web": "kid2tune Web-UI"
+  },
   "history": {
     "title": "Zuletzt abgespielt",
     "desc": "Die letzten 10 abgespielten Titel. Klicke auf den Play-Button, um direkt wieder abzuspielen.",

@@ -3,6 +3,16 @@
 All notable changes to this project are documented here.
 Versioning: **X.Y.Z** — X = major, Y = feature, Z = bugfix.
 
+## [2.9.1] – 2026-05-16
+
+### Added
+- **Boot timing measurement**: oneshot systemd service `kid2tune-boot-timing` records
+  seconds-since-power-on for each milestone: multi-user.target, LMS port 9000,
+  LMS RPC ready, Spotty plugin available, Squeezelite registered, kid2tune web UI
+- New card on Settings page shows the last cold-boot measurement
+- Endpoint: `GET /api/boot-timing` returns the JSON from `/var/lib/lms-controller/boot_timing.json`
+- First measurement on lilabox: 54s total cold-boot (27s system + 26s LMS startup + 1s register)
+
 ## [2.9.0] – 2026-05-16
 
 ### Added

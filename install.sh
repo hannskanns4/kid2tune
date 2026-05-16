@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# kid2tune Installer v2.9.0 for Raspberry Pi Zero 2W
+# kid2tune Installer v2.9.1 for Raspberry Pi Zero 2W
 # Installs: Lyrion Music Server, Squeezelite, RFID Controller, I2C LCD,
 #           GPIO Buttons, Flask Web Interface
 # Usage:    sudo bash install.sh
@@ -20,7 +20,7 @@ error() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 step()  { echo -e "\n${CYAN}══════════════════════════════════════════${NC}"; echo -e "${CYAN}  $*${NC}"; echo -e "${CYAN}══════════════════════════════════════════${NC}"; }
 
 # ── Version & Configuration ────────────────────────────────────────────────
-VERSION="2.9.0"
+VERSION="2.9.1"
 SWAP_FILE="/var/tmp/install_swap"
 BTN_VOL_UP=19
 BTN_VOL_DOWN=26
@@ -419,6 +419,23 @@ SQEOF
 
 info "Service files created."
 
+# Boot-timing measurement service (oneshot at multi-user.target)
+mkdir -p /var/lib/lms-controller
+cat > /etc/systemd/system/kid2tune-boot-timing.service << 'BTEOF'
+[Unit]
+Description=kid2tune boot timing measurement
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/lms-controller/boot_timing.py
+RemainAfterExit=no
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target
+BTEOF
+
 # =============================================================================
 # STEP 9: Enable services
 # =============================================================================
@@ -426,6 +443,7 @@ step "Step 9: Enable services"
 
 systemctl daemon-reload
 update-rc.d squeezelite disable 2>/dev/null || true
+systemctl enable kid2tune-boot-timing.service 2>/dev/null || true
 
 # Start LMS first and wait (needs a lot of RAM at startup)
 for candidate in lyrionmusicserver logitechmediaserver; do

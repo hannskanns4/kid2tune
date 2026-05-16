@@ -129,6 +129,15 @@
     </table>
   </div>
 
+  <!-- Boot timing -->
+  <div class="card p-4 mt-3">
+    <h5>&#9201;&#65039; {{ t("boot.title") }}</h5>
+    <p class="text-muted small mb-2">{{ t("boot.desc") }}</p>
+    <table class="table table-dark table-sm mb-0" id="boot-timing-table">
+      <tr><td colspan="2" class="text-muted text-center" id="boot-timing-empty">{{ t("boot.no_data") }}</td></tr>
+    </table>
+  </div>
+
 </div>
 {% endblock %}
 
@@ -330,5 +339,40 @@ function restartLms(){
 }
 checkLmsPlugins();
 setInterval(checkLmsPlugins, 300000); // re-check every 5 min
+
+// ── Boot Timing ────────────────────────────────────────────────────────────
+const BOOT_LABELS = {
+  multi_user:    {{ t("boot.multi_user")|tojson }},
+  lms_port_9000: {{ t("boot.lms_port_9000")|tojson }},
+  lms_rpc_ready: {{ t("boot.lms_rpc_ready")|tojson }},
+  spotty_ready:  {{ t("boot.spotty_ready")|tojson }},
+  squeezelite:   {{ t("boot.squeezelite")|tojson }},
+  kid2tune_web:  {{ t("boot.kid2tune_web")|tojson }}
+};
+const BOOT_ORDER = ["multi_user", "lms_port_9000", "lms_rpc_ready",
+                    "spotty_ready", "squeezelite", "kid2tune_web"];
+
+function loadBootTiming(){
+  fetch('/api/boot-timing').then(r => r.json()).then(d => {
+    const tbl = document.getElementById('boot-timing-table');
+    if(!d || !Object.keys(d).length){ return; }
+    let rows = '';
+    BOOT_ORDER.forEach(key => {
+      const v = d[key];
+      const label = BOOT_LABELS[key] || key;
+      const val = (v === null || v === undefined) ? '—' : v.toFixed(1) + ' s';
+      rows += `<tr><td>${label}</td><td><strong>${val}</strong></td></tr>`;
+    });
+    const total = d.kid2tune_web || d.measured_until || null;
+    if(total !== null){
+      rows += `<tr class="table-active"><td>{{ t("boot.total")|safe }}</td><td><strong>${total.toFixed(1)} s</strong></td></tr>`;
+    }
+    if(!d.complete){
+      rows += `<tr><td colspan="2" class="text-warning small">{{ t("boot.incomplete")|safe }}</td></tr>`;
+    }
+    tbl.innerHTML = rows;
+  }).catch(()=>{});
+}
+loadBootTiming();
 </script>
 {% endblock %}
