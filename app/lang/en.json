@@ -29,6 +29,7 @@
   },
   "nav": {
     "brand": "kid2tune",
+    "history": "History",
     "alarms": "Alarms",
     "rfid": "RFID",
     "sync": "Sync",
@@ -537,7 +538,31 @@
     "daemon_stopped": "Hardware daemon stopped."
   },
   "lms": {
-    "rpc_fail": "LMS RPC failed: {error}"
+    "rpc_fail": "LMS RPC failed: {error}",
+    "plugins_title": "LMS Plugins",
+    "plugins_checking": "Checking for updates...",
+    "plugins_uptodate": "All plugins up to date.",
+    "plugins_offline": "LMS not reachable.",
+    "plugins_available": "{count} update(s) available: {names}",
+    "plugins_install": "Install updates",
+    "plugins_working": "Installing...",
+    "plugins_confirm": "Install LMS plugin updates now? LMS will restart afterwards (~30s playback interruption).",
+    "plugins_updating": "{count} plugin(s) installing: {names}. LMS is restarting (~30s).",
+    "plugins_none": "No plugin updates available.",
+    "restart": "Restart LMS",
+    "confirm_restart": "Restart LMS server now? Playback will be interrupted briefly (~10-20s).",
+    "restarting": "Restarting LMS...",
+    "restart_started": "LMS server is restarting."
+  },
+  "history": {
+    "title": "Recently played",
+    "desc": "The last 10 played items. Click the play button to play again.",
+    "empty": "Nothing played yet.",
+    "play_again": "Replay",
+    "clear": "Clear history",
+    "confirm_clear": "Really clear history?",
+    "recent_short": "Recently played",
+    "show_all": "Show all"
   },
   "security": {
     "no_package": "No package received.",

@@ -3,6 +3,26 @@
 All notable changes to this project are documented here.
 Versioning: **X.Y.Z** — X = major, Y = feature, Z = bugfix.
 
+## [2.9.0] – 2026-05-16
+
+### Added
+- **Play history**: stores the last 10 unique playback items (deduplicated by value)
+  - New page `/history` with full list and "Replay" button per entry
+  - Top-3 preview block on the index page directly below Quick-Play
+  - New nav item "Verlauf / History"
+  - Captures plays from RFID cards, Quick-Play URLs and alarms
+  - Spotify/URL plays without label get title/artist fetched from LMS after 3s
+  - Stored in `app/play_history.json` (not synced, local-only)
+  - Endpoints: `GET /api/history`, `POST /api/history/play`, `POST /api/history/clear`
+- **One-click LMS plugin updates** on the index page
+  - Card auto-checks `http://lms:9000/settings/server/plugins.html` for pending plugin updates every 5 min
+  - When updates available: shows "X Updates verfügbar: Plugin A, Plugin B" + green "Updates installieren" button
+  - One click: scrapes form, preserves currently-installed plugins, includes LMS CSRF `rand` token, submits, restarts LMS service — no manual LMS UI navigation
+  - When all up to date: shows "Alle Plugins sind aktuell" + a fallback "LMS neu starten" button
+  - Endpoints: `GET /api/lms/plugins/check`, `POST /api/lms/plugins/update`, `POST /api/lms/restart`
+  - Service restart tries `lyrionmusicserver`, falls back to `logitechmediaserver`
+  - Designed for users overwhelmed by the LMS plugin manager — single button, full automation
+
 ## [2.8.2] – 2026-04-14
 
 ### Changed

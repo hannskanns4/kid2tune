@@ -185,7 +185,7 @@ def handle_card(uid_hex: str):
                     else:
                         log.warning(f"Download failed: {result}")
                 if os.path.isfile(local_path):
-                    lms_client.play_item("url", f"file://{local_path}")
+                    lms_client.play_item("url", f"file://{local_path}", label=label)
                     # Push file to NAS in background (in case other boxes need it)
                     try:
                         sync_manager.push_music_file(local_path)
@@ -231,7 +231,7 @@ def handle_card(uid_hex: str):
                     multiroom_manager.activate_master()
                     log.info("Multiroom activated.")
             else:
-                lms_client.play_item(item_type, item_id)
+                lms_client.play_item(item_type, item_id, label=label)
             # Resume: jump to saved position
             if resume and position > 0 and item_type not in ("bluetooth", "multiroom", "sleep"):
                 # Wait until playback actually started (max 5s)

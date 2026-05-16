@@ -256,14 +256,22 @@ _UPDATE_CHECK_INTERVAL = 1800  # 30 minutes
 
 
 def _check_update_background():
-    """Check for updates in a background thread (non-blocking)."""
+    """Check for kid2tune software AND LMS plugin updates (non-blocking)."""
     global _update_available, _update_check_time
+    sw_update = False
+    plugin_update = False
     try:
         import update_manager
         result = update_manager.check_for_update()
-        _update_available = result.get("update_available", False)
+        sw_update = bool(result.get("update_available", False))
     except Exception:
-        _update_available = False
+        pass
+    try:
+        import lms_plugins
+        plugin_update = bool(lms_plugins.get_available_updates(timeout=5))
+    except Exception:
+        pass
+    _update_available = sw_update or plugin_update
     _update_check_time = time.time()
 
 

@@ -28,6 +28,8 @@ import bluetooth_manager
 import multiroom_manager
 import standby_manager
 import update_manager
+import play_history
+import lms_plugins
 import i18n
 
 # Load language from config.json
@@ -335,7 +337,7 @@ def rfid_play(uid):
                     local_path = result
                 else:
                     return jsonify({"ok": False, "message": i18n.t("rfid.file_not_found", error=result)}), 404
-            lms_client.play_item("url", f"file://{local_path}")
+            lms_client.play_item("url", f"file://{local_path}", label=entry.get('label', uid))
             try:
                 sync_manager.push_music_file(local_path)
             except Exception:
@@ -361,7 +363,7 @@ def rfid_play(uid):
                 msg = i18n.t("multiroom.activated") if ok else i18n.t("multiroom.no_boxes")
                 return jsonify({"ok": ok, "message": msg})
         else:
-            lms_client.play_item(item_type, item_id)
+            lms_client.play_item(item_type, item_id, label=entry.get('label', uid))
             return jsonify({"ok": True, "message": i18n.t("rfid.playing", label=entry.get('label', uid))})
     except Exception as e:
         return jsonify({"ok": False, "message": str(e)}), 500
@@ -1146,6 +1148,110 @@ def update_token_set():
     return jsonify({"ok": True, "message": i18n.t("settings.token_saved") if token else i18n.t("settings.token_removed")})
 
 
+# ── Play History ─────────────────────────────────────────────────────────────
+
+@app.route("/history")
+def history_page():
+    return render_template("history.html", history=play_history.get_history())
+
+
+@app.route("/api/history")
+def api_history():
+    return jsonify(play_history.get_history())
+
+
+@app.route("/api/history/play", methods=["POST"])
+def api_history_play():
+    """Re-plays an entry from the history by its `value` (track id, URI, URL)."""
+    data = request.json or {}
+    value = (data.get("value") or "").strip()
+    if not value:
+        return jsonify({"ok": False, "message": i18n.t("player.no_link")}), 400
+    item_type = (data.get("type") or "url").strip()
+    label = (data.get("label") or "").strip()
+    try:
+        lms_client.play_item(item_type, value, label=label)
+        return jsonify({"ok": True, "message": i18n.t("player.playing", url=label or value)})
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+
+@app.route("/api/history/clear", methods=["POST"])
+def api_history_clear():
+    play_history.clear_history()
+    return jsonify({"ok": True})
+
+
+# ── LMS Server Restart ──────────────────────────────────────────────────────
+
+def _restart_lms_service():
+    """Restart the LMS systemd service. Tries lyrionmusicserver, then logitechmediaserver."""
+    import subprocess
+    last_err = ""
+    for service in ("lyrionmusicserver", "logitechmediaserver"):
+        try:
+            r = subprocess.run(["systemctl", "restart", service],
+                               capture_output=True, text=True, timeout=20)
+            if r.returncode == 0:
+                logging.getLogger("WEB").info(f"{service} restart triggered.")
+                return True, service
+            last_err = r.stderr.strip()
+        except Exception as e:
+            last_err = str(e)
+    return False, last_err
+
+
+@app.route("/api/lms/restart", methods=["POST"])
+def api_lms_restart():
+    """Restarts the LMS server. Pending plugin updates are installed on startup."""
+    ok, info = _restart_lms_service()
+    if ok:
+        return jsonify({"ok": True, "message": i18n.t("lms.restart_started")})
+    return jsonify({"ok": False, "message": info or "LMS service not found"}), 500
+
+
+# ── LMS Plugin Updates (one-click) ──────────────────────────────────────────
+
+@app.route("/api/lms/plugins/check")
+def api_lms_plugins_check():
+    """Returns the list of plugin updates currently available in LMS."""
+    try:
+        html = lms_plugins.fetch_page(timeout=10)
+    except Exception as e:
+        return jsonify({"ok": False, "updates": [], "count": 0, "message": str(e)}), 200
+    updates, _action, _installed, _rand = lms_plugins.parse(html)
+    return jsonify({"ok": True, "count": len(updates), "updates": updates})
+
+
+@app.route("/api/lms/plugins/update", methods=["POST"])
+def api_lms_plugins_update():
+    """One-click plugin update: select all available updates, submit form, restart LMS."""
+    ok, updates, info = lms_plugins.install_all_available(timeout=30)
+    if not ok:
+        return jsonify({"ok": False, "message": info}), 500
+    if not updates:
+        return jsonify({"ok": True, "count": 0,
+                        "message": i18n.t("lms.plugins_none")})
+
+    # Restart LMS in background so the HTTP response is sent first.
+    def _delayed_restart():
+        import time as _t
+        _t.sleep(2)
+        _restart_lms_service()
+    threading.Thread(target=_delayed_restart, daemon=True).start()
+
+    names = [u["label"] for u in updates]
+    logging.getLogger("WEB").info(
+        f"LMS plugin update: {len(updates)} plugin(s) marked, LMS restarting: {names}")
+    return jsonify({
+        "ok": True,
+        "count": len(updates),
+        "plugins": names,
+        "message": i18n.t("lms.plugins_updating",
+                          count=len(updates), names=", ".join(names)),
+    })
+
+
 # ── Language ─────────────────────────────────────────────────────────────────
 
 @app.route("/api/language", methods=["POST"])
@@ -1408,7 +1514,7 @@ def _alarm_check_loop():
                                 entry = cfg.get("rfid_mappings", {}).get(uid)
                                 if entry:
                                     lms_client.set_volume(vol)
-                                    lms_client.play_item(entry.get("type", "url"), entry.get("value", ""))
+                                    lms_client.play_item(entry.get("type", "url"), entry.get("value", ""), label=entry.get('label', uid))
                                     logging.getLogger("WEB").info(f"Alarm: '{entry.get('label', uid)}' at vol {vol}")
                 _last_alarm_minute = current_time
         except Exception as e:

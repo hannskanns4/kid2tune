@@ -193,11 +193,12 @@ def search(query: str, search_type: str = "tracks") -> list:
     return items
 
 
-def play_item(item_type: str, item_id: str):
+def play_item(item_type: str, item_id: str, label: str = ""):
     """
     Plays an LMS item.
     item_type: 'track', 'album', 'playlist', 'url'
     item_id:   LMS ID or URL
+    label:     optional display name for the history (e.g. RFID card label)
     """
     pid = _get_player_id()
     if not pid:
@@ -213,6 +214,13 @@ def play_item(item_type: str, item_id: str):
         _rpc([pid, ["playlistcontrol", "cmd:load", f"playlist_id:{item_id}"]])
     elif item_type == "url":
         _rpc([pid, ["playlist", "play", item_id]])
+    else:
+        return
+    try:
+        import play_history
+        play_history.record_play(item_type, item_id, label)
+    except Exception as e:
+        log.debug(f"play_history record failed: {e}")
 
 
 # ── Multiroom Sync ───────────────────────────────────────────────────────────

@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block title %}{{ t("history.title") }} – kid2tune{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+  <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+    <h4 class="mb-0">{{ t("history.title") }}</h4>
+    <button class="btn btn-outline-danger btn-sm" onclick="clearHistory()" id="btn-clear">
+      {{ t("history.clear") }}
+    </button>
+  </div>
+  <p class="text-muted small">{{ t("history.desc") }}</p>
+
+  <div id="history-list" class="d-flex flex-column gap-2">
+    {% if not history %}
+    <p class="text-muted text-center mt-4" id="empty-msg">{{ t("history.empty") }}</p>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const _th = {
+  empty:           {{ t("history.empty")|tojson }},
+  confirm_clear:   {{ t("history.confirm_clear")|tojson }},
+  error_msg:       {{ t("common.error_msg")|tojson }},
+  play_again:      {{ t("history.play_again")|tojson }},
+  unknown_title:   {{ t("common.no_title")|tojson }}
+};
+
+function escapeHtml(s){
+  return String(s||'').replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
+
+function fmtAge(ts){
+  if(!ts) return '';
+  const diff = Math.max(0, (Date.now()/1000) - ts);
+  if(diff < 60) return Math.round(diff) + 's';
+  if(diff < 3600) return Math.round(diff/60) + 'min';
+  if(diff < 86400) return Math.round(diff/3600) + 'h';
+  return Math.round(diff/86400) + 'd';
+}
+
+function renderHistory(items){
+  const list = document.getElementById('history-list');
+  list.innerHTML = '';
+  if(!items.length){
+    list.innerHTML = '<p class="text-muted text-center mt-4">'+ _th.empty +'</p>';
+    return;
+  }
+  items.forEach((it, idx) => {
+    const card = document.createElement('div');
+    card.className = 'card p-3';
+    const title  = escapeHtml(it.title || it.label || _th.unknown_title);
+    const artist = escapeHtml(it.artist || '');
+    const value  = escapeHtml(it.value || '');
+    const type   = escapeHtml(it.type || '');
+    const age    = fmtAge(it.timestamp);
+    card.innerHTML = `
+      <div class="d-flex justify-content-between align-items-center gap-2 flex-wrap">
+        <div class="flex-grow-1" style="min-width:0;">
+          <div class="fw-bold text-truncate">${title}</div>
+          ${artist ? '<div class="small text-muted text-truncate">'+artist+'</div>' : ''}
+          <div class="small text-muted text-truncate">
+            <span class="badge bg-secondary">${type}</span>
+            ${value}
+          </div>
+        </div>
+        <div class="d-flex align-items-center gap-2">
+          <span class="small text-muted">${age}</span>
+          <button class="btn btn-success btn-sm"
+                  onclick='playEntry(${JSON.stringify(it)})'>
+            &#9654; ${_th.play_again}
+          </button>
+        </div>
+      </div>`;
+    list.appendChild(card);
+  });
+}
+
+function loadHistory(){
+  fetch('/api/history').then(r => r.json()).then(renderHistory).catch(()=>{});
+}
+
+function playEntry(entry){
+  fetch('/api/history/play', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({
+      type:  entry.type,
+      value: entry.value,
+      label: entry.label || entry.title || ''
+    })
+  }).then(r => r.json()).then(d => {
+    if(!d.ok) alert(_th.error_msg + ' ' + d.message);
+    else setTimeout(loadHistory, 500);
+  }).catch(e => alert(_th.error_msg + ' ' + e));
+}
+
+function clearHistory(){
+  if(!confirm(_th.confirm_clear)) return;
+  fetch('/api/history/clear', {method:'POST'})
+    .then(() => loadHistory());
+}
+
+loadHistory();
+setInterval(loadHistory, 5000);
+</script>
+{% endblock %}

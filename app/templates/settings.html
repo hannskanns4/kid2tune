@@ -103,6 +103,20 @@
       <button class="btn btn-outline-success" onclick="doGitUpdateAll()" id="btn-update-all">{{ t("settings.update_all") }}</button>
       <span id="update-status" class="text-muted small"></span>
     </div>
+
+    <hr class="my-3">
+
+    <!-- LMS Plugins -->
+    <h6 class="mt-2">&#127911; {{ t("lms.plugins_title") }}</h6>
+    <p class="text-muted small mb-2" id="lms-plugins-status">{{ t("lms.plugins_checking") }}</p>
+    <div class="d-flex gap-2 flex-wrap align-items-center">
+      <button class="btn btn-success" onclick="updateLmsPlugins()" id="btn-lms-update" style="display:none;">
+        &#8615; <span id="btn-lms-update-label">{{ t("lms.plugins_install") }}</span>
+      </button>
+      <button class="btn btn-outline-warning" onclick="restartLms()" id="btn-lms-restart" style="display:none;">
+        &#8635; {{ t("lms.restart") }}
+      </button>
+    </div>
   </div>
 
   <!-- Info -->
@@ -133,6 +147,16 @@ const MSG_UPDATING = {{ t("settings.msg_updating")|tojson }};
 const MSG_UPDATE_ALL_CONFIRM = {{ t("settings.msg_update_all_confirm")|tojson }};
 const MSG_UPDATE_ALL_RUNNING = {{ t("settings.msg_update_all_running")|tojson }};
 const MSG_TOKEN_SET = {{ t("settings.msg_token_set")|tojson }};
+const MSG_LMS_CHECKING  = {{ t("lms.plugins_checking")|tojson }};
+const MSG_LMS_UPTODATE  = {{ t("lms.plugins_uptodate")|tojson }};
+const MSG_LMS_OFFLINE   = {{ t("lms.plugins_offline")|tojson }};
+const MSG_LMS_AVAILABLE = {{ t("lms.plugins_available")|tojson }};
+const MSG_LMS_INSTALL   = {{ t("lms.plugins_install")|tojson }};
+const MSG_LMS_CONFIRM   = {{ t("lms.plugins_confirm")|tojson }};
+const MSG_LMS_WORKING   = {{ t("lms.plugins_working")|tojson }};
+const MSG_LMS_RESTART_CONFIRM = {{ t("lms.confirm_restart")|tojson }};
+const MSG_LMS_RESTARTING = {{ t("lms.restarting")|tojson }};
+const MSG_LMS_RESTART   = {{ t("lms.restart")|tojson }};
 
 // Update hostname preview live
 document.getElementById('hostname').addEventListener('input', function(){
@@ -243,5 +267,68 @@ function doGitUpdateAll(){
     document.getElementById('btn-update-all').disabled = false;
   });
 }
+
+// ── LMS Plugin Updates ─────────────────────────────────────────────────────
+function checkLmsPlugins(){
+  fetch('/api/lms/plugins/check').then(r => r.json()).then(d => {
+    const status = document.getElementById('lms-plugins-status');
+    const btnUp  = document.getElementById('btn-lms-update');
+    const btnRs  = document.getElementById('btn-lms-restart');
+    if(!d.ok){
+      status.textContent = MSG_LMS_OFFLINE;
+      btnUp.style.display = 'none';
+      btnRs.style.display = 'none';
+      return;
+    }
+    if(!d.count){
+      status.textContent = MSG_LMS_UPTODATE;
+      btnUp.style.display = 'none';
+      btnRs.style.display = '';
+      return;
+    }
+    const names = (d.updates||[]).map(u => u.label || u.name).join(', ');
+    status.textContent = MSG_LMS_AVAILABLE
+      .replace('{count}', d.count).replace('{names}', names);
+    document.getElementById('btn-lms-update-label').textContent =
+      MSG_LMS_INSTALL + ' (' + d.count + ')';
+    btnUp.style.display = '';
+    btnRs.style.display = 'none';
+  }).catch(()=>{});
+}
+function updateLmsPlugins(){
+  if(!confirm(MSG_LMS_CONFIRM)) return;
+  const btn = document.getElementById('btn-lms-update');
+  btn.disabled = true;
+  document.getElementById('btn-lms-update-label').textContent = MSG_LMS_WORKING;
+  fetch('/api/lms/plugins/update', {method:'POST'})
+    .then(r => r.json()).then(d => {
+      alert(d.message || (d.ok ? 'OK' : MSG_ERROR));
+      btn.disabled = false;
+      setTimeout(checkLmsPlugins, 60000);
+    }).catch(e => {
+      alert(MSG_ERROR + ': ' + e);
+      btn.disabled = false;
+      document.getElementById('btn-lms-update-label').textContent = MSG_LMS_INSTALL;
+    });
+}
+function restartLms(){
+  if(!confirm(MSG_LMS_RESTART_CONFIRM)) return;
+  const btn = document.getElementById('btn-lms-restart');
+  btn.disabled = true;
+  btn.textContent = MSG_LMS_RESTARTING;
+  fetch('/api/lms/restart', {method:'POST'})
+    .then(r => r.json()).then(d => {
+      alert(d.message || (d.ok ? 'OK' : MSG_ERROR));
+      btn.disabled = false;
+      btn.innerHTML = '&#8635; ' + MSG_LMS_RESTART;
+      setTimeout(checkLmsPlugins, 30000);
+    }).catch(e => {
+      alert(MSG_ERROR + ': ' + e);
+      btn.disabled = false;
+      btn.innerHTML = '&#8635; ' + MSG_LMS_RESTART;
+    });
+}
+checkLmsPlugins();
+setInterval(checkLmsPlugins, 300000); // re-check every 5 min
 </script>
 {% endblock %}

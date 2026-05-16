@@ -50,6 +50,15 @@
     </div>
   </div>
 
+  <!-- Verlauf (top 3) -->
+  <div class="card p-3 mt-3" id="history-card" style="display:none;">
+    <div class="d-flex justify-content-between align-items-center mb-2">
+      <strong class="small">{{ t('history.recent_short') }}</strong>
+      <a href="/history" class="small text-info text-decoration-none">{{ t('history.show_all') }} &raquo;</a>
+    </div>
+    <div id="history-preview" class="d-flex flex-column gap-1"></div>
+  </div>
+
   <!-- Dashboard / Multiroom -->
   <div class="mt-4">
     <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
@@ -88,7 +97,9 @@ const _tp = {
   slave:             {{ t("multiroom.slave")|tojson }},
   confirm_sync:      {{ t("multiroom.confirm_sync")|tojson }},
   confirm_unsync:    {{ t("multiroom.confirm_unsync")|tojson }},
-  confirm_unsync_all:{{ t("multiroom.confirm_unsync_all")|tojson }}
+  confirm_unsync_all:{{ t("multiroom.confirm_unsync_all")|tojson }},
+  unknown_title:     {{ t("common.no_title")|tojson }},
+  play_again:        {{ t("history.play_again")|tojson }}
 };
 
 // ── Player ──────────────────────────────────────────────────────────────────
@@ -394,5 +405,53 @@ function refreshBoxes() {
 // Bekannte Boxen sofort laden, voller Scan nur auf Button-Klick
 loadBoxes();
 setInterval(refreshBoxes, 3000);
+
+// ── Verlauf (Top 3) ─────────────────────────────────────────────────────────
+function _escH(s){
+  return String(s||'').replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
+function renderHistoryPreview(items){
+  const card = document.getElementById('history-card');
+  const box  = document.getElementById('history-preview');
+  if(!items || !items.length){ card.style.display='none'; return; }
+  card.style.display='';
+  box.innerHTML = '';
+  items.slice(0, 3).forEach(it => {
+    const title  = _escH(it.title || it.label || _tp.unknown_title);
+    const artist = _escH(it.artist || '');
+    const row = document.createElement('div');
+    row.className = 'd-flex justify-content-between align-items-center gap-2';
+    row.innerHTML = `
+      <div class="flex-grow-1 text-truncate" style="min-width:0;">
+        <span>${title}</span>
+        ${artist ? '<span class="text-muted small ms-1">— '+artist+'</span>' : ''}
+      </div>
+      <button class="btn btn-success btn-sm text-nowrap"
+              onclick='playHistory(${JSON.stringify(it)})'>&#9654;</button>`;
+    box.appendChild(row);
+  });
+}
+function playHistory(entry){
+  fetch('/api/history/play', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({
+      type:  entry.type,
+      value: entry.value,
+      label: entry.label || entry.title || ''
+    })
+  }).then(r => r.json()).then(d => {
+    if(!d.ok) alert(_tp.error_msg + ' ' + d.message);
+    else setTimeout(loadHistoryPreview, 500);
+  }).catch(e => alert(_tp.error_msg + ' ' + e));
+}
+function loadHistoryPreview(){
+  fetch('/api/history').then(r => r.json()).then(renderHistoryPreview).catch(()=>{});
+}
+loadHistoryPreview();
+setInterval(loadHistoryPreview, 5000);
+
 </script>
 {% endblock %}

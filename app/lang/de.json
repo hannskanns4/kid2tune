@@ -29,6 +29,7 @@
   },
   "nav": {
     "brand": "kid2tune",
+    "history": "Verlauf",
     "alarms": "Wecker",
     "rfid": "RFID",
     "sync": "Sync",
@@ -537,7 +538,31 @@
     "daemon_stopped": "Hardware-Daemon beendet."
   },
   "lms": {
-    "rpc_fail": "LMS RPC fehlgeschlagen: {error}"
+    "rpc_fail": "LMS RPC fehlgeschlagen: {error}",
+    "plugins_title": "LMS-Plugins",
+    "plugins_checking": "Prüfe auf Updates...",
+    "plugins_uptodate": "Alle Plugins sind aktuell.",
+    "plugins_offline": "LMS nicht erreichbar.",
+    "plugins_available": "{count} Update(s) verfügbar: {names}",
+    "plugins_install": "Updates installieren",
+    "plugins_working": "Installiere...",
+    "plugins_confirm": "LMS-Plugin-Updates jetzt installieren? Der LMS-Server startet danach neu (~30 Sek. Unterbrechung der Wiedergabe).",
+    "plugins_updating": "{count} Plugin(s) werden installiert: {names}. LMS startet neu (~30 Sek.).",
+    "plugins_none": "Keine Plugin-Updates verfügbar.",
+    "restart": "LMS neu starten",
+    "confirm_restart": "LMS-Server jetzt neu starten? Wiedergabe wird kurz unterbrochen (~10-20 Sek.).",
+    "restarting": "Starte LMS neu...",
+    "restart_started": "LMS-Server wird neu gestartet."
+  },
+  "history": {
+    "title": "Zuletzt abgespielt",
+    "desc": "Die letzten 10 abgespielten Titel. Klicke auf den Play-Button, um direkt wieder abzuspielen.",
+    "empty": "Noch nichts abgespielt.",
+    "play_again": "Nochmal",
+    "clear": "Verlauf löschen",
+    "confirm_clear": "Verlauf wirklich löschen?",
+    "recent_short": "Zuletzt abgespielt",
+    "show_all": "Alle anzeigen"
   },
   "security": {
     "no_package": "Kein Paket empfangen.",
