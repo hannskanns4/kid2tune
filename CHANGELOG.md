@@ -3,6 +3,66 @@
 All notable changes to this project are documented here.
 Versioning: **X.Y.Z** — X = major, Y = feature, Z = bugfix.
 
+## [2.10.1] – 2026-07-22
+
+### Fixed
+- **Netzwerk-Update-Log-Crash**: `update_git_all` verwendete ein undefiniertes
+  `log` → `NameError` beim „Alle Boxen updaten". Modulweiter Logger `log`
+  (`logging.getLogger("WEB")`) ergänzt
+- **Verlauf abspielen für lokale/Bluetooth-Einträge**: `api_history_play`
+  konnte nur `url`-Typen abspielen (lokale Dateien/Bluetooth brachen still).
+  Läuft jetzt über die gemeinsame `_play_mapping`-Logik
+- **Fehlende Übersetzungen auf der Einstellungen-Seite**: 13 JS-Meldungen
+  (`settings.msg_*`) hatten keine Sprach-Keys → User sah rohe Key-Strings.
+  Keys in `de.json` und `en.json` ergänzt
+- **XSS über `innerHTML`**: Karten-Labels (Alarme), Titel/Artist/Hostname/Version
+  (Dashboard, Multiroom-Karten) und Bluetooth-MAC wurden ungefiltert eingefügt.
+  Werte werden jetzt konsequent HTML-escaped
+- **LCD-Backlight-Bug**: Form-Wert `"0"` galt als truthy → Backlight ließ sich
+  per Formular nicht ausschalten. String-Werte `"0"/"false"/"off"` zählen nun als aus
+
+### Security
+- **Path-Traversal**: Lokale-Datei-Mappings verketteten `value` ungeprüft mit
+  `MUSIC_DIR`; ein `../`-Wert hätte LMS beliebige Dateien lesen lassen. Neuer
+  `sync_manager.safe_music_path()`-Containment-Check in `_play_mapping` (Web)
+  und `rfid_handler`
+
+### Changed
+- **Atomare Config-Schreibzugriffe**: `api_volume_max_set`, `rfid_assign`,
+  `rfid_edit`, `rfid_delete`, `alarms_save` sowie `sync_manager.save_sync_config`
+  und `pull_mappings` nutzen jetzt `config_manager.update_config()` (ein Lock über
+  Lesen+Ändern+Schreiben) statt getrenntem `load_config()`/`save_config()` →
+  keine verlorenen Schreibvorgänge mehr bei nebenläufigen Daemons
+- **Standby-Sicherheit**: Wenn `mount -o remount,ro /` fehlschlägt, meldet
+  `enter_standby` nun `ok=False` und warnt „Strom abziehen NICHT sicher"
+  (vorher wurde trotz beschreibbarem Filesystem „sicher" gemeldet → SD-Karten-Risiko)
+- **RFID-Daemon sauberes Herunterfahren**: SIGTERM/SIGINT-Handler ergänzt →
+  `GPIO.cleanup()` und Resume-Position werden auch bei `systemctl stop` ausgeführt
+- **LCD-Thread stirbt nicht mehr still**: `sys.exit(1)` bei fehlendem Display
+  durch `return` ersetzt (SystemExit im Daemon-Thread wurde nicht geloggt)
+- **Kinder-Lautstärkegrenze**: `_get_max_volume` fällt bei Config-Lesefehler auf
+  den zuletzt bekannten Wert (statt 100 %) zurück, Initial-Fallback konservativ 60 %
+
+## [2.10.0] – 2026-06-10
+
+### Added
+- **Karten vormerken aus dem Verlauf**: Auf der Verlauf-Seite gibt es pro Eintrag
+  einen "Vormerken"-Button (&#128190;), der den Titel als Mapping **ohne Karte**
+  speichert (neuer Config-Key `pending_mappings`)
+- Vorgemerkte Einträge erscheinen auf der RFID-Seite im neuen Abschnitt
+  "Vorgemerkt (noch ohne Karte)" mit Play / Bearbeiten / Karte-zuweisen / Löschen
+- **Nachträgliches Verknüpfen**: Karte auflegen → im Zuweisen-Formular das Dropdown
+  "Vorgemerkten Eintrag verwenden" wählen (füllt Label/Typ/Wert) → "Zuweisen" macht
+  daraus eine echte Karte und entfernt die Vormerkung
+- Vorgemerkte Titel spielen exakt wie zugewiesene Karten (gemeinsame Play-Logik
+  `_play_mapping` für Bluetooth, lokale Datei, Sleep, Multiroom und normale Items)
+- Endpunkte: `POST /rfid/pending/add`, `/rfid/pending/edit/<id>`,
+  `/rfid/pending/delete/<id>`, `/rfid/pending/play/<id>`
+
+### Changed
+- Verlauf-Seite (und alle Cards): Schrift jetzt durchgängig hell (`.card` mit
+  explizitem `color`) – vorher schwarze Schrift auf dunklem Hintergrund
+
 ## [2.9.1] – 2026-05-16
 
 ### Added

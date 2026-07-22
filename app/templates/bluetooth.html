@@ -191,7 +191,7 @@ function scanDevices() {
       } else {
         actions = '<button class="btn btn-info btn-sm" onclick="switchAudio(\'bluetooth\',\'' + dev.mac + '\')">&#128266; ' + escHtml(_tp.audio) + '</button>';
       }
-      tr.innerHTML = '<td>' + escHtml(dev.name) + '</td><td><code>' + dev.mac + '</code></td><td>' + escHtml(status) + '</td><td>' + actions + '</td>';
+      tr.innerHTML = '<td>' + escHtml(dev.name) + '</td><td><code>' + escHtml(dev.mac) + '</code></td><td>' + escHtml(status) + '</td><td>' + actions + '</td>';
       body.appendChild(tr);
     });
   }).catch(function(e) {

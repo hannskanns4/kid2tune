@@ -100,11 +100,19 @@ def prev_track():
     _player_cmd(["playlist", "index", "-1"])
 
 
+# Last successfully computed volume limit. Used as a conservative fallback if
+# reading the config transiently fails, so a glitch never silently unlocks the
+# full 100% volume on a children's box. Starts at a safe moderate level.
+_LAST_MAX_VOLUME = 60
+
+
 def _get_max_volume() -> int:
     """Reads the volume limit from config.json, with optional day/night schedule."""
+    global _LAST_MAX_VOLUME
     try:
         cfg = _cfg()
         base_max = int(cfg.get("volume_max", 100))
+        result = base_max
 
         schedule = cfg.get("volume_schedule")
         if schedule:
@@ -116,13 +124,17 @@ def _get_max_volume() -> int:
                 limit = int(period.get("max", 100))
                 if start <= end:
                     if start <= now < end:
-                        return min(base_max, limit)
+                        result = min(base_max, limit)
+                        break
                 else:  # Across midnight (e.g. 20:00–06:00)
                     if now >= start or now < end:
-                        return min(base_max, limit)
-        return base_max
+                        result = min(base_max, limit)
+                        break
+        _LAST_MAX_VOLUME = result
+        return result
     except Exception:
-        return 100
+        # Config read failed: fall back to the last known limit instead of 100%.
+        return _LAST_MAX_VOLUME
 
 
 def set_volume(level: int):

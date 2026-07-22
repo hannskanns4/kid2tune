@@ -26,6 +26,8 @@ const _th = {
   confirm_clear:   {{ t("history.confirm_clear")|tojson }},
   error_msg:       {{ t("common.error_msg")|tojson }},
   play_again:      {{ t("history.play_again")|tojson }},
+  save_card:       {{ t("history.save_card")|tojson }},
+  saved:           {{ t("history.saved")|tojson }},
   unknown_title:   {{ t("common.no_title")|tojson }}
 };
 
@@ -71,6 +73,10 @@ function renderHistory(items){
         </div>
         <div class="d-flex align-items-center gap-2">
           <span class="small text-muted">${age}</span>
+          <button class="btn btn-outline-light btn-sm"
+                  onclick='savePending(${JSON.stringify(it)}, this)' title="${_th.save_card}">
+            &#128190; ${_th.save_card}
+          </button>
           <button class="btn btn-success btn-sm"
                   onclick='playEntry(${JSON.stringify(it)})'>
             &#9654; ${_th.play_again}
@@ -98,6 +104,21 @@ function playEntry(entry){
     if(!d.ok) alert(_th.error_msg + ' ' + d.message);
     else setTimeout(loadHistory, 500);
   }).catch(e => alert(_th.error_msg + ' ' + e));
+}
+
+function savePending(entry, btn){
+  fetch('/rfid/pending/add', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({
+      type:  entry.type,
+      value: entry.value,
+      label: entry.label || entry.title || ''
+    })
+  }).then(r => r.json()).then(d => {
+    if(d.ok){ btn.disabled = true; btn.innerHTML = '&#10003; ' + _th.saved; }
+    else alert(_th.error_msg.replace('{msg}', d.message || ''));
+  }).catch(e => alert(_th.error_msg.replace('{msg}', e)));
 }
 
 function clearHistory(){

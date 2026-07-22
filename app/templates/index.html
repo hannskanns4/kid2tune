@@ -220,10 +220,10 @@ function renderBoxes() {
     const mr = box.data.multiroom || {};
     const mode = p.mode || 'stop';
     const isPlaying = mode === 'play';
-    const title = p.title || _tp.no_title;
-    const artist = p.artist || '';
+    const title = _escH(p.title || _tp.no_title);
+    const artist = _escH(p.artist || '');
     const volume = p.volume || 0;
-    const hostname = box.data.hostname || box.ip;
+    const hostname = _escH(box.data.hostname || box.ip);
     const isSelf = box.self;
     const boxIsSynced = isMaster && joinedBoxes.includes(box.ip);
 
@@ -262,7 +262,7 @@ function renderBoxes() {
             ${isSelf && isMaster ? '<span class="badge bg-info ms-1">' + _tp.master + '</span>' : ''}
             ${isSelf && isSlave ? '<span class="badge bg-warning text-dark ms-1">' + _tp.slave + '</span>' : ''}
           </h5>
-          <span class="badge bg-secondary">${box.data.version || '?'}</span>
+          <span class="badge bg-secondary">${_escH(box.data.version || '?')}</span>
         </div>
         <div class="small">${title}</div>
         <div class="small text-muted">${artist}</div>

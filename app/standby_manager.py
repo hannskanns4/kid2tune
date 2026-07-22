@@ -79,20 +79,33 @@ def enter_standby() -> tuple:
     time.sleep(1)
 
     # 5. Remount filesystem read-only
+    ro_ok = False
+    ro_err = ""
     try:
         result = subprocess.run(
             ["mount", "-o", "remount,ro", "/"],
             capture_output=True, text=True, timeout=10,
         )
         if result.returncode == 0:
+            ro_ok = True
             log.info("Filesystem mounted read-only.")
         else:
-            log.warning(f"Read-only remount: {result.stderr.strip()}")
+            ro_err = result.stderr.strip()
+            log.warning(f"Read-only remount: {ro_err}")
     except Exception as e:
+        ro_err = str(e)
         log.warning(f"Read-only remount failed: {e}")
 
-    log.info("Deep standby active. Unplugging power is safe.")
-    return True, "Deep standby active."
+    if ro_ok:
+        log.info("Deep standby active. Unplugging power is safe.")
+        return True, "Deep standby active."
+
+    # Read-only remount failed: the filesystem is still writable, so pulling
+    # the power now risks SD-card corruption. Do NOT claim it is safe.
+    log.error("Deep standby active BUT filesystem is still read-write "
+              f"({ro_err or 'remount failed'}) – do NOT unplug power yet.")
+    return False, ("Standby active, but filesystem could not be set read-only "
+                   "– unplugging power is NOT safe.")
 
 
 def wake_up() -> tuple:

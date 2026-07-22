@@ -5,6 +5,7 @@ Reads cards, looks up UID in config.json, controls LMS.
 import os
 import sys
 import time
+import signal
 import logging
 import threading
 
@@ -34,6 +35,11 @@ except Exception as e:
     log.error(f"RC522 could not be initialized: {e}")
     log.error("Please enable SPI and install mfrc522.")
     sys.exit(1)
+
+
+# Set by the SIGTERM/SIGINT handler so the main loop can exit cleanly
+# (running GPIO.cleanup() and saving the resume position on `systemctl stop`).
+_stop = threading.Event()
 
 
 def load_config() -> dict:
@@ -176,15 +182,17 @@ def handle_card(uid_hex: str):
                     log.warning(f"Bluetooth connection failed: {msg}")
             elif item_type == "local":
                 # Local music file – pull from NAS if needed, then play
-                local_path = os.path.join(sync_manager.MUSIC_DIR, item_id)
-                if not os.path.isfile(local_path):
+                local_path = sync_manager.safe_music_path(item_id)
+                if local_path is None:
+                    log.error(f"Rejected unsafe local path: {item_id}")
+                elif not os.path.isfile(local_path):
                     log.info(f"File missing locally, attempting NAS download: {item_id}")
                     ok, result = sync_manager.pull_music_file(item_id)
                     if ok:
                         local_path = result
                     else:
                         log.warning(f"Download failed: {result}")
-                if os.path.isfile(local_path):
+                if local_path and os.path.isfile(local_path):
                     lms_client.play_item("url", f"file://{local_path}", label=label)
                     # Push file to NAS in background (in case other boxes need it)
                     try:
@@ -251,14 +259,45 @@ def handle_card(uid_hex: str):
             f.write(uid_hex)
 
 
+def _save_resume_position(uid):
+    """Persists the current playback position for a resume-enabled card.
+
+    Called both when a card is lifted off the reader and on daemon shutdown."""
+    if not uid:
+        return
+    try:
+        cfg = load_config()
+        entry = cfg.get("rfid_mappings", {}).get(uid)
+        if entry and entry.get("resume"):
+            status = lms_client.get_status()
+            elapsed = status.get("elapsed", 0)
+            if elapsed > 0:
+                def _save_position(c):
+                    e = c.get("rfid_mappings", {}).get(uid)
+                    if e:
+                        e["position"] = elapsed
+                config_manager.update_config(_save_position)
+                log.info(f"Position saved: {elapsed:.0f}s for {uid}")
+    except Exception as ex:
+        log.warning(f"Saving position failed: {ex}")
+
+
 def main():
     log.info("RFID handler started. Waiting for cards...")
+
+    def _handle_stop(signum, frame):
+        log.info("Stop signal received – shutting down RFID handler...")
+        _stop.set()
+
+    signal.signal(signal.SIGTERM, _handle_stop)
+    signal.signal(signal.SIGINT, _handle_stop)
+
     last_uid     = None
     miss_count   = 0       # Counts consecutive missed scans
     MISS_THRESHOLD = 3     # Card considered removed only after 3 missed scans
     SCAN_INTERVAL  = 0.5   # Faster scanning for better detection
 
-    while True:
+    while not _stop.is_set():
         try:
             rdr = READER.READER
             (status, _) = rdr.MFRC522_Request(rdr.PICC_REQIDL)
@@ -281,35 +320,22 @@ def main():
 
             # Consider card removed only after multiple missed scans
             if last_uid and miss_count >= MISS_THRESHOLD:
-                # Save position if resume is active
-                try:
-                    saved_uid = last_uid  # Copy for closure
-                    cfg = load_config()
-                    entry = cfg.get("rfid_mappings", {}).get(saved_uid)
-                    if entry and entry.get("resume"):
-                        status = lms_client.get_status()
-                        elapsed = status.get("elapsed", 0)
-                        if elapsed > 0:
-                            def _save_position(c):
-                                e = c.get("rfid_mappings", {}).get(saved_uid)
-                                if e:
-                                    e["position"] = elapsed
-                            config_manager.update_config(_save_position)
-                            log.info(f"Position saved: {elapsed:.0f}s for {saved_uid}")
-                except Exception as ex:
-                    log.warning(f"Saving position failed: {ex}")
+                _save_resume_position(last_uid)
                 log.info(f"Card {last_uid} removed.")
                 last_uid = None
                 miss_count = 0
 
-            time.sleep(SCAN_INTERVAL)
+            _stop.wait(SCAN_INTERVAL)
 
         except KeyboardInterrupt:
             break
         except Exception as e:
             log.error(f"Read error: {e}")
-            time.sleep(SCAN_INTERVAL)
+            _stop.wait(SCAN_INTERVAL)
 
+    # Clean shutdown (e.g. `systemctl stop`): persist the position of the card
+    # still on the reader and release the GPIO pins.
+    _save_resume_position(last_uid)
     GPIO.cleanup()
     log.info("RFID handler stopped.")
 

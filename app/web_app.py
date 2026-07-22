@@ -15,6 +15,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [WEB] %(levelname)s: %(message)s",
 )
+log = logging.getLogger("WEB")
 
 DIR = os.path.dirname(os.path.abspath(__file__))
 LAST_RFID_FILE = "/tmp/lms_last_rfid"
@@ -170,9 +171,9 @@ def api_volume_max_get():
 def api_volume_max_set():
     val = (request.json or {}).get("volume_max", 100)
     val = max(10, min(100, int(val)))
-    cfg = load_config()
-    cfg["volume_max"] = val
-    save_config(cfg)
+    def _update(cfg):
+        cfg["volume_max"] = val
+    config_manager.update_config(_update)
     return jsonify({"ok": True, "volume_max": val})
 
 
@@ -182,7 +183,8 @@ def api_volume_max_set():
 def rfid_page():
     cfg = load_config()
     mappings = cfg.get("rfid_mappings", {})
-    return render_template("rfid.html", mappings=mappings)
+    pending = cfg.get("pending_mappings", [])
+    return render_template("rfid.html", mappings=mappings, pending=pending)
 
 
 @app.route("/rfid/scan")
@@ -234,21 +236,30 @@ def rfid_assign():
         itype = "url"
 
     now = datetime.now(timezone.utc).isoformat()
-    cfg = load_config()
-    box_id = cfg.get("sync", {}).get("box_id", "unknown")
-
     resume = request.form.get("resume") == "1"
-    mapping_data = {
-        "label": label,
-        "type":  itype,
-        "value": value,
-        "resume": resume,
-        "position": 0,
-        "updated_at": now,
-        "updated_by": box_id,
-    }
-    cfg.setdefault("rfid_mappings", {})[uid] = mapping_data
-    save_config(cfg)
+    # If this assignment came from a pre-saved ("pending") entry, remove it
+    pending_id = request.form.get("pending_id", "").strip()
+
+    _holder = {}
+    def _update(cfg):
+        box_id = cfg.get("sync", {}).get("box_id", "unknown")
+        mapping_data = {
+            "label": label,
+            "type":  itype,
+            "value": value,
+            "resume": resume,
+            "position": 0,
+            "updated_at": now,
+            "updated_by": box_id,
+        }
+        cfg.setdefault("rfid_mappings", {})[uid] = mapping_data
+        if pending_id:
+            cfg["pending_mappings"] = [
+                e for e in cfg.get("pending_mappings", []) if e.get("id") != pending_id
+            ]
+        _holder["mapping"] = mapping_data
+    config_manager.update_config(_update)
+    mapping_data = _holder["mapping"]
 
     # Remove processed card from tmp file
     if os.path.exists(LAST_RFID_FILE):
@@ -268,11 +279,6 @@ def rfid_assign():
 def rfid_edit(uid):
     from datetime import datetime, timezone
     uid = uid.strip().upper()
-    cfg = load_config()
-    mappings = cfg.get("rfid_mappings", {})
-    if uid not in mappings:
-        return redirect(url_for("rfid_page"))
-
     data = request.form
     label = data.get("label", "").strip()
     itype = data.get("type", "url")
@@ -288,21 +294,30 @@ def rfid_edit(uid):
         itype = "url"
 
     now = datetime.now(timezone.utc).isoformat()
-    box_id = cfg.get("sync", {}).get("box_id", "unknown")
-
     resume = request.form.get("resume") == "1"
-    old_position = mappings[uid].get("position", 0)
-    mapping_data = {
-        "label": label or uid,
-        "type":  itype,
-        "value": value,
-        "resume": resume,
-        "position": old_position if resume else 0,
-        "updated_at": now,
-        "updated_by": box_id,
-    }
-    mappings[uid] = mapping_data
-    save_config(cfg)
+
+    _holder = {}
+    def _update(cfg):
+        mappings = cfg.get("rfid_mappings", {})
+        if uid not in mappings:
+            return
+        box_id = cfg.get("sync", {}).get("box_id", "unknown")
+        old_position = mappings[uid].get("position", 0)
+        mapping_data = {
+            "label": label or uid,
+            "type":  itype,
+            "value": value,
+            "resume": resume,
+            "position": old_position if resume else 0,
+            "updated_at": now,
+            "updated_by": box_id,
+        }
+        mappings[uid] = mapping_data
+        _holder["mapping"] = mapping_data
+    config_manager.update_config(_update)
+    mapping_data = _holder.get("mapping")
+    if mapping_data is None:
+        return redirect(url_for("rfid_page"))
 
     sync_manager.queue_change("upsert", uid, mapping_data)
     try:
@@ -313,6 +328,61 @@ def rfid_edit(uid):
     return redirect(url_for("rfid_page"))
 
 
+def _play_mapping(entry, fallback_label=""):
+    """Plays a mapping entry (real card or pending). Returns (json_dict, status).
+
+    Shared by /rfid/play/<uid> and /rfid/pending/play/<pid> so pending entries
+    behave exactly like assigned cards – just without a UID."""
+    item_type = entry.get("type", "url")
+    item_id   = entry.get("value", "")
+    label     = entry.get("label", fallback_label) or fallback_label
+    try:
+        if item_type == "bluetooth":
+            ok, msg = bluetooth_manager.connect_device(item_id)
+            if ok:
+                bluetooth_manager.switch_audio_to_bluetooth(item_id)
+            return {"ok": ok, "message": msg}, (200 if ok else 500)
+        elif item_type == "local":
+            local_path = sync_manager.safe_music_path(item_id)
+            if local_path is None:
+                return {"ok": False, "message": i18n.t("rfid.file_not_found", error=item_id)}, 404
+            if not os.path.isfile(local_path):
+                ok, result = sync_manager.pull_music_file(item_id)
+                if not ok:
+                    return {"ok": False, "message": i18n.t("rfid.file_not_found", error=result)}, 404
+                local_path = result
+            lms_client.play_item("url", f"file://{local_path}", label=label)
+            try:
+                sync_manager.push_music_file(local_path)
+            except Exception:
+                pass
+            return {"ok": True, "message": i18n.t("rfid.playing", label=label)}, 200
+        elif item_type == "sleep":
+            try:
+                minutes = int(item_id)
+            except (ValueError, TypeError):
+                minutes = 15
+            return {"ok": True, "message": i18n.t("rfid.sleep_timer", minutes=minutes)}, 200
+        elif item_type == "multiroom":
+            mr_status = multiroom_manager.get_status()
+            if mr_status.get("active"):
+                if mr_status.get("role") == "master":
+                    multiroom_manager.deactivate_master()
+                    return {"ok": True, "message": i18n.t("multiroom.deactivated_short")}, 200
+                else:
+                    multiroom_manager.leave_master()
+                    return {"ok": True, "message": i18n.t("multiroom.slave_left")}, 200
+            else:
+                ok = multiroom_manager.activate_master()
+                msg = i18n.t("multiroom.activated") if ok else i18n.t("multiroom.no_boxes")
+                return {"ok": ok, "message": msg}, 200
+        else:
+            lms_client.play_item(item_type, item_id, label=label)
+            return {"ok": True, "message": i18n.t("rfid.playing", label=label)}, 200
+    except Exception as e:
+        return {"ok": False, "message": str(e)}, 500
+
+
 @app.route("/rfid/play/<uid>", methods=["POST"])
 def rfid_play(uid):
     uid = uid.strip().upper()
@@ -320,60 +390,15 @@ def rfid_play(uid):
     mappings = cfg.get("rfid_mappings", {})
     if uid not in mappings:
         return jsonify({"ok": False, "message": i18n.t("rfid.card_not_found")}), 404
-    entry = mappings[uid]
-    item_type = entry.get("type", "url")
-    item_id = entry.get("value", "")
-    try:
-        if item_type == "bluetooth":
-            ok, msg = bluetooth_manager.connect_device(item_id)
-            if ok:
-                bluetooth_manager.switch_audio_to_bluetooth(item_id)
-            return jsonify({"ok": ok, "message": msg})
-        elif item_type == "local":
-            local_path = os.path.join(sync_manager.MUSIC_DIR, item_id)
-            if not os.path.isfile(local_path):
-                ok, result = sync_manager.pull_music_file(item_id)
-                if ok:
-                    local_path = result
-                else:
-                    return jsonify({"ok": False, "message": i18n.t("rfid.file_not_found", error=result)}), 404
-            lms_client.play_item("url", f"file://{local_path}", label=entry.get('label', uid))
-            try:
-                sync_manager.push_music_file(local_path)
-            except Exception:
-                pass
-            return jsonify({"ok": True, "message": i18n.t("rfid.playing", label=entry.get('label', uid))})
-        elif item_type == "sleep":
-            try:
-                minutes = int(item_id)
-            except (ValueError, TypeError):
-                minutes = 15
-            return jsonify({"ok": True, "message": i18n.t("rfid.sleep_timer", minutes=minutes)})
-        elif item_type == "multiroom":
-            mr_status = multiroom_manager.get_status()
-            if mr_status.get("active"):
-                if mr_status.get("role") == "master":
-                    multiroom_manager.deactivate_master()
-                    return jsonify({"ok": True, "message": i18n.t("multiroom.deactivated_short")})
-                else:
-                    multiroom_manager.leave_master()
-                    return jsonify({"ok": True, "message": i18n.t("multiroom.slave_left")})
-            else:
-                ok = multiroom_manager.activate_master()
-                msg = i18n.t("multiroom.activated") if ok else i18n.t("multiroom.no_boxes")
-                return jsonify({"ok": ok, "message": msg})
-        else:
-            lms_client.play_item(item_type, item_id, label=entry.get('label', uid))
-            return jsonify({"ok": True, "message": i18n.t("rfid.playing", label=entry.get('label', uid))})
-    except Exception as e:
-        return jsonify({"ok": False, "message": str(e)}), 500
+    result, status = _play_mapping(mappings[uid], fallback_label=uid)
+    return jsonify(result), status
 
 
 @app.route("/rfid/delete/<uid>", methods=["POST"])
 def rfid_delete(uid):
-    cfg = load_config()
-    cfg.get("rfid_mappings", {}).pop(uid.upper(), None)
-    save_config(cfg)
+    def _update(cfg):
+        cfg.get("rfid_mappings", {}).pop(uid.upper(), None)
+    config_manager.update_config(_update)
 
     # NAS sync: tombstone in queue, then try push
     sync_manager.queue_change("delete", uid.upper())
@@ -383,6 +408,89 @@ def rfid_delete(uid):
         pass  # Queue remains for next sync
 
     return redirect(url_for("rfid_page"))
+
+
+# ── Pending mappings (saved without a card yet) ─────────────────────────────
+
+@app.route("/rfid/pending/add", methods=["POST"])
+def rfid_pending_add():
+    """Stores a playable item without a card. Later linkable to a UID via the
+    assign form. Used by the history page's 'remember' button."""
+    from datetime import timezone
+    import uuid as _uuid
+    data  = request.json or request.form
+    label = (data.get("label") or "").strip()
+    itype = (data.get("type") or "url").strip()
+    value = (data.get("value") or "").strip()
+    if not value:
+        return jsonify({"ok": False, "message": i18n.t("player.no_link")}), 400
+    resume = str(data.get("resume")) in ("1", "true", "True", "on")
+    entry = {
+        "id":     _uuid.uuid4().hex[:8],
+        "label":  label or value,
+        "type":   itype,
+        "value":  value,
+        "resume": resume,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    def _add(cfg):
+        lst = cfg.setdefault("pending_mappings", [])
+        if any(e.get("value") == value for e in lst):
+            return  # already pending – no duplicate
+        lst.insert(0, entry)
+    config_manager.update_config(_add)
+    return jsonify({"ok": True, "entry": entry})
+
+
+@app.route("/rfid/pending/delete/<pid>", methods=["POST"])
+def rfid_pending_delete(pid):
+    def _del(cfg):
+        lst = cfg.get("pending_mappings", [])
+        cfg["pending_mappings"] = [e for e in lst if e.get("id") != pid]
+    config_manager.update_config(_del)
+    return jsonify({"ok": True})
+
+
+@app.route("/rfid/pending/edit/<pid>", methods=["POST"])
+def rfid_pending_edit(pid):
+    """Edits a pending entry (label/type/value/resume) – mirrors /rfid/edit."""
+    data  = request.form
+    label = data.get("label", "").strip()
+    itype = data.get("type", "url")
+    value = data.get("value", "").strip()
+    if not value:
+        return redirect(url_for("rfid_page"))
+
+    # Convert Spotify URL to URI (same as card assign/edit)
+    import re as _re
+    sp = _re.match(r"https?://open\.spotify\.com/(?:intl-[a-z]+/)?(track|album|playlist|artist)/([a-zA-Z0-9]+)", value)
+    if sp:
+        value = f"spotify:{sp.group(1)}:{sp.group(2)}"
+        itype = "url"
+
+    resume = request.form.get("resume") == "1"
+
+    def _edit(cfg):
+        for e in cfg.get("pending_mappings", []):
+            if e.get("id") == pid:
+                e["label"]  = label or value
+                e["type"]   = itype
+                e["value"]  = value
+                e["resume"] = resume
+                break
+    config_manager.update_config(_edit)
+    return redirect(url_for("rfid_page"))
+
+
+@app.route("/rfid/pending/play/<pid>", methods=["POST"])
+def rfid_pending_play(pid):
+    cfg = load_config()
+    entry = next((e for e in cfg.get("pending_mappings", []) if e.get("id") == pid), None)
+    if not entry:
+        return jsonify({"ok": False, "message": i18n.t("rfid.card_not_found")}), 404
+    result, status = _play_mapping(entry, fallback_label=entry.get("label", ""))
+    return jsonify(result), status
 
 
 # ── LMS Search for RFID Assignment ──────────────────────────────────────────
@@ -763,9 +871,15 @@ def lcd_backlight_status():
 def lcd_backlight_set():
     data = request.json or request.form or {}
     on = data.get("on", True)
+    # Form values arrive as strings – "0"/"false"/"off" must count as False,
+    # otherwise a non-empty string like "0" is truthy and the backlight never turns off.
+    if isinstance(on, str):
+        on = on.strip().lower() not in ("0", "false", "off", "no", "")
+    else:
+        on = bool(on)
     with open(BACKLIGHT_FILE, "w") as f:
         f.write("1" if on else "0")
-    return jsonify({"ok": True, "on": bool(on)})
+    return jsonify({"ok": True, "on": on})
 
 
 # ── Multiroom Sync ───────────────────────────────────────────────────────────
@@ -1169,11 +1283,9 @@ def api_history_play():
         return jsonify({"ok": False, "message": i18n.t("player.no_link")}), 400
     item_type = (data.get("type") or "url").strip()
     label = (data.get("label") or "").strip()
-    try:
-        lms_client.play_item(item_type, value, label=label)
-        return jsonify({"ok": True, "message": i18n.t("player.playing", url=label or value)})
-    except Exception as e:
-        return jsonify({"ok": False, "message": str(e)}), 500
+    entry = {"type": item_type, "value": value, "label": label}
+    result, status = _play_mapping(entry, fallback_label=label or value)
+    return jsonify(result), status
 
 
 @app.route("/api/history/clear", methods=["POST"])
@@ -1549,9 +1661,10 @@ def alarms_page():
 @app.route("/alarms/save", methods=["POST"])
 def alarms_save():
     data = request.json or {}
-    cfg = load_config()
-    cfg["alarms"] = data.get("alarms", [])
-    save_config(cfg)
+    alarms = data.get("alarms", [])
+    def _update(cfg):
+        cfg["alarms"] = alarms
+    config_manager.update_config(_update)
     return jsonify({"ok": True})
 
 

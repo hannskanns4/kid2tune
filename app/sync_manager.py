@@ -33,6 +33,21 @@ NAS_MUSIC_DIR = "music"  # Subdirectory in the NAS mount
 
 # ── Helper Functions ────────────────────────────────────────────────────────
 
+def safe_music_path(item_id: str):
+    """Resolves a music file name against MUSIC_DIR and guarantees the result
+    stays inside MUSIC_DIR (prevents path traversal via '../' in the value).
+
+    Returns the absolute path on success, or None if the path would escape
+    MUSIC_DIR (or the input is empty)."""
+    if not item_id:
+        return None
+    base = os.path.realpath(MUSIC_DIR)
+    candidate = os.path.realpath(os.path.join(base, item_id))
+    if candidate == base or candidate.startswith(base + os.sep):
+        return candidate
+    return None
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -67,17 +82,17 @@ def get_sync_config() -> dict:
 
 def save_sync_config(nas_share: str, username: str, password: str,
                       box_id: str, enabled: bool = True):
-    cfg = _load_config()
-    old_sync = cfg.get("sync", {})
-    cfg["sync"] = {
-        "enabled": enabled,
-        "nas_share": nas_share,
-        "username": username,
-        "password": password,
-        "mount_point": old_sync.get("mount_point", "/mnt/lms-sync"),
-        "box_id": box_id or old_sync.get("box_id", "unknown"),
-    }
-    _save_config(cfg)
+    def _update(cfg):
+        old_sync = cfg.get("sync", {})
+        cfg["sync"] = {
+            "enabled": enabled,
+            "nas_share": nas_share,
+            "username": username,
+            "password": password,
+            "mount_point": old_sync.get("mount_point", "/mnt/lms-sync"),
+            "box_id": box_id or old_sync.get("box_id", "unknown"),
+        }
+    config_manager.update_config(_update)
 
 
 # ── NAS Mount ───────────────────────────────────────────────────────────────
@@ -382,55 +397,52 @@ def pull_mappings() -> Tuple[bool, str]:
         return False, f"NAS not reachable: {err}"
 
     try:
-        cfg = _load_config()
-        local_mappings = cfg.get("rfid_mappings", {})
-        box_id = sync_cfg.get("box_id", "unknown")
-        now = _now_iso()
-
+        # Read the shared state from the NAS BEFORE taking the config lock, so
+        # the (potentially slow) NAS I/O does not block other config access.
         shared = _load_shared()
         entries = shared.get("entries", {})
 
-        added = 0
-        updated = 0
-        removed = 0
+        counters = {"added": 0, "updated": 0, "removed": 0}
 
-        for uid, shared_entry in entries.items():
-            local_entry = local_mappings.get(uid)
-            local_ts = ""
-            if local_entry:
-                local_ts = local_entry.get("updated_at", "")
+        def _merge(cfg):
+            # Read-modify-write happens atomically under the exclusive config
+            # lock, so concurrent rfid_assign/edit/delete cannot be lost.
+            local_mappings = cfg.setdefault("rfid_mappings", {})
+            for uid, shared_entry in entries.items():
+                local_entry = local_mappings.get(uid)
+                local_ts = local_entry.get("updated_at", "") if local_entry else ""
+                shared_ts = shared_entry.get("updated_at", "")
 
-            shared_ts = shared_entry.get("updated_at", "")
+                if shared_entry.get("deleted"):
+                    # Tombstone: delete locally if shared is newer
+                    if uid in local_mappings and shared_ts > local_ts:
+                        del local_mappings[uid]
+                        counters["removed"] += 1
+                else:
+                    # Upsert: apply if shared is newer or not present locally
+                    new_data = {
+                        "label": shared_entry.get("label", ""),
+                        "type": shared_entry.get("type", ""),
+                        "value": shared_entry.get("value", ""),
+                        "updated_at": shared_ts,
+                        "updated_by": shared_entry.get("updated_by", ""),
+                    }
+                    if uid not in local_mappings:
+                        local_mappings[uid] = new_data
+                        counters["added"] += 1
+                    elif shared_ts > local_ts:
+                        # Preserve local resume/position fields
+                        old_local = local_mappings[uid]
+                        new_data["resume"] = old_local.get("resume", False)
+                        new_data["position"] = old_local.get("position", 0)
+                        local_mappings[uid] = new_data
+                        counters["updated"] += 1
 
-            if shared_entry.get("deleted"):
-                # Tombstone: delete locally if shared is newer
-                if uid in local_mappings and shared_ts > local_ts:
-                    del local_mappings[uid]
-                    removed += 1
-            else:
-                # Upsert: apply if shared is newer or not present locally
-                new_data = {
-                    "label": shared_entry.get("label", ""),
-                    "type": shared_entry.get("type", ""),
-                    "value": shared_entry.get("value", ""),
-                    "updated_at": shared_ts,
-                    "updated_by": shared_entry.get("updated_by", ""),
-                }
-                if uid not in local_mappings:
-                    local_mappings[uid] = new_data
-                    added += 1
-                elif shared_ts > local_ts:
-                    # Preserve local resume/position fields
-                    old_local = local_mappings[uid]
-                    new_data["resume"] = old_local.get("resume", False)
-                    new_data["position"] = old_local.get("position", 0)
-                    local_mappings[uid] = new_data
-                    updated += 1
+        cfg = config_manager.update_config(_merge)
+        total = len(cfg.get("rfid_mappings", {}))
 
-        cfg["rfid_mappings"] = local_mappings
-        _save_config(cfg)
-
-        msg = f"Pull: +{added} new, ~{updated} updated, -{removed} deleted ({len(local_mappings)} local)"
+        msg = (f"Pull: +{counters['added']} new, ~{counters['updated']} updated, "
+               f"-{counters['removed']} deleted ({total} local)")
         log.info(msg)
         return True, msg
 

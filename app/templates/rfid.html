@@ -14,6 +14,22 @@
 
     <form method="POST" action="/rfid/assign" id="assign-form" enctype="multipart/form-data">
       <input type="hidden" name="uid" id="form-uid">
+      <input type="hidden" name="pending_id" id="form-pending-id">
+      {% if pending %}
+      <div class="mb-2">
+        <label class="form-label small">{{ t("rfid.use_pending") }}</label>
+        <select class="form-select bg-dark text-light" id="pending-select" onchange="applyPending()">
+          <option value="">{{ t("rfid.pending_none") }}</option>
+          {% for e in pending %}
+          <option value="{{ e.id }}"
+                  data-label="{{ e.label }}" data-type="{{ e.type }}"
+                  data-value="{{ e.value }}" data-resume="{{ '1' if e.resume else '' }}">
+            {{ e.label }} ({{ e.type }})
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+      {% endif %}
       <div class="row g-2">
         <div class="col-md-3">
           <input type="text" class="form-control bg-dark text-light" name="label" id="form-label"
@@ -129,6 +145,73 @@
     <p class="text-muted">{{ t("rfid.no_cards") }}</p>
     {% endif %}
   </div>
+
+  <!-- Vorgemerkte Einträge (noch ohne Karte) -->
+  {% if pending %}
+  <div class="card p-3 mt-4">
+    <h5>{{ t("rfid.pending_title") }}</h5>
+    <p class="text-muted small">{{ t("rfid.pending_desc") }}</p>
+    <table class="table table-dark table-hover">
+      <thead><tr><th>{{ t("rfid.col_label") }}</th><th>{{ t("rfid.col_type") }}</th><th>{{ t("rfid.col_value") }}</th><th>{{ t("rfid.col_actions") }}</th></tr></thead>
+      <tbody>
+        {% for e in pending %}
+        <tr id="prow-{{ e.id }}">
+          <td>{{ e.label }}</td>
+          <td><span class="badge bg-secondary">{{ e.type }}</span></td>
+          <td class="text-truncate" style="max-width:180px" title="{{ e.value }}">{{ e.value }}</td>
+          <td>
+            <div class="d-flex gap-1">
+              <button class="btn btn-success btn-sm" onclick="playPending('{{ e.id }}')" title="{{ t('common.play') }}">&#9654;</button>
+              <button class="btn btn-warning btn-sm" onclick="toggleEditPending('{{ e.id }}')" title="{{ t('common.edit') }}">&#9998;</button>
+              <button class="btn btn-primary btn-sm" onclick="selectPending('{{ e.id }}')" title="{{ t('rfid.assign_card') }}">&#128190;</button>
+              <button class="btn btn-danger btn-sm" onclick="deletePending('{{ e.id }}')" title="{{ t('common.delete') }}">&#128465;</button>
+            </div>
+          </td>
+        </tr>
+        <tr id="pedit-{{ e.id }}" style="display:none;" class="table-active">
+          <td colspan="4">
+            <form method="POST" action="/rfid/pending/edit/{{ e.id }}" class="row g-2 align-items-end">
+              <div class="col-md-3">
+                <label class="form-label small">{{ t("rfid.col_label") }}</label>
+                <input type="text" class="form-control form-control-sm bg-dark text-light" name="label"
+                       value="{{ e.label }}" required>
+              </div>
+              <div class="col-md-2">
+                <label class="form-label small">{{ t("rfid.col_type") }}</label>
+                <select class="form-select form-select-sm bg-dark text-light" name="type">
+                  <option value="track" {% if e.type=='track' %}selected{% endif %}>{{ t("rfid.type_song") }}</option>
+                  <option value="album" {% if e.type=='album' %}selected{% endif %}>{{ t("rfid.type_album") }}</option>
+                  <option value="playlist" {% if e.type=='playlist' %}selected{% endif %}>{{ t("rfid.type_playlist") }}</option>
+                  <option value="url" {% if e.type=='url' %}selected{% endif %}>{{ t("rfid.type_url") }}</option>
+                  <option value="local" {% if e.type=='local' %}selected{% endif %}>{{ t("rfid.type_file") }}</option>
+                  <option value="bluetooth" {% if e.type=='bluetooth' %}selected{% endif %}>{{ t("rfid.type_bluetooth") }}</option>
+                  <option value="multiroom" {% if e.type=='multiroom' %}selected{% endif %}>{{ t("rfid.type_multiroom") }}</option>
+                  <option value="sleep" {% if e.type=='sleep' %}selected{% endif %}>{{ t("rfid.type_sleep") }}</option>
+                  <option value="shutdown" {% if e.type=='shutdown' %}selected{% endif %}>{{ t("rfid.type_shutdown") }}</option>
+                </select>
+              </div>
+              <div class="col-md-4">
+                <label class="form-label small">{{ t("rfid.col_value") }}</label>
+                <input type="text" class="form-control form-control-sm bg-dark text-light" name="value"
+                       value="{{ e.value }}" required>
+              </div>
+              <div class="col-md-3">
+                <div class="form-check mb-1">
+                  <input class="form-check-input" type="checkbox" name="resume" value="1"
+                         {% if e.resume %}checked{% endif %}>
+                  <label class="form-check-label small">{{ t("rfid.remember_pos") }}</label>
+                </div>
+                <button type="submit" class="btn btn-success btn-sm">{{ t("common.save") }}</button>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="toggleEditPending('{{ e.id }}')">{{ t("common.cancel") }}</button>
+              </div>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
 </div>
 {% endblock %}
 
@@ -160,6 +243,43 @@ function playCard(uid){
 function toggleEdit(uid){
   const editRow = document.getElementById('edit-'+uid);
   editRow.style.display = editRow.style.display==='none' ? '' : 'none';
+}
+// ── Vorgemerkte Einträge (ohne Karte) ───────────────────────────────────────
+function applyPending(){
+  const sel = document.getElementById('pending-select');
+  if(!sel) return;
+  const opt = sel.options[sel.selectedIndex];
+  if(!opt || !opt.value){ document.getElementById('form-pending-id').value=''; return; }
+  document.getElementById('form-pending-id').value = opt.value;
+  document.getElementById('form-label').value = opt.dataset.label || '';
+  document.getElementById('form-type').value  = opt.dataset.type  || 'url';
+  document.getElementById('form-value').value = opt.dataset.value || '';
+  document.getElementById('form-resume').checked = opt.dataset.resume === '1';
+  updateTypeHint();
+}
+function selectPending(id){
+  const sel = document.getElementById('pending-select');
+  if(sel){ sel.value = id; applyPending(); sel.scrollIntoView({behavior:'smooth', block:'center'}); }
+}
+function toggleEditPending(id){
+  const editRow = document.getElementById('pedit-'+id);
+  editRow.style.display = editRow.style.display==='none' ? '' : 'none';
+}
+function playPending(id){
+  fetch('/rfid/pending/play/'+id, {method:'POST'})
+    .then(r=>r.json()).then(d=>{
+      const el = document.getElementById('prow-'+id);
+      if(d.ok && el){ el.style.outline='2px solid #4ade80'; setTimeout(()=>{ el.style.outline=''; }, 1500); }
+      else if(!d.ok){ alert(_tp.error_msg.replace('{msg}', d.message)); }
+    }).catch(e=>alert(_tp.error_msg.replace('{msg}', e)));
+}
+function deletePending(id){
+  if(!confirm(_tp.confirm_delete)) return;
+  fetch('/rfid/pending/delete/'+id, {method:'POST'}).then(()=>{
+    const row  = document.getElementById('prow-'+id);  if(row)  row.remove();
+    const erow = document.getElementById('pedit-'+id); if(erow) erow.remove();
+    const opt  = document.querySelector('#pending-select option[value="'+id+'"]'); if(opt) opt.remove();
+  });
 }
 let pollInterval = setInterval(pollScan, 2000);
 function pollScan(){

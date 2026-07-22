@@ -19,6 +19,12 @@ const MSG_CARD_SELECT = {{ t("alarms.card_select")|tojson }};
 const MSG_SAVED = {{ t("alarms.saved")|tojson }};
 const MSG_DELETE = {{ t("common.delete")|tojson }};
 
+function escapeHtml(s){
+  return String(s==null?'':s).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
+
 function renderAlarms() {
   const list = document.getElementById('alarm-list');
   list.innerHTML = '';
@@ -28,7 +34,7 @@ function renderAlarms() {
       return `<label class="form-check-label me-2"><input type="checkbox" class="form-check-input" data-alarm="${i}" data-day="${di+1}" ${checked}> ${d}</label>`;
     }).join('');
     const cardOpts = Object.entries(mappings).map(([uid, e]) =>
-      `<option value="${uid}" ${a.rfid_uid===uid?'selected':''}>${e.label || uid}</option>`
+      `<option value="${escapeHtml(uid)}" ${a.rfid_uid===uid?'selected':''}>${escapeHtml(e.label || uid)}</option>`
     ).join('');
     list.innerHTML += `
       <div class="card p-3 mb-2">

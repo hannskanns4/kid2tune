@@ -50,6 +50,12 @@ function scanBoxes() {
   });
 }
 
+function _escH(s){
+  return String(s==null?'':s).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
+
 function renderBoxes() {
   const container = document.getElementById('boxes');
   container.innerHTML = '';
@@ -58,8 +64,8 @@ function renderBoxes() {
     const mr = box.data.multiroom || {};
     const mode = p.mode || 'stop';
     const isPlaying = mode === 'play';
-    const title = p.title || _tp.no_title;
-    const artist = p.artist || '';
+    const title = _escH(p.title || _tp.no_title);
+    const artist = _escH(p.artist || '');
     const volume = p.volume || 0;
     const mrRole = mr.active ? (mr.role === 'master' ? _tp.master : _tp.slave) : '';
 
@@ -70,9 +76,9 @@ function renderBoxes() {
         <div class="d-flex justify-content-between align-items-center mb-2">
           <h5 class="mb-0">
             <span class="status-dot ${isPlaying ? 'dot-green' : mode === 'pause' ? 'dot-blue' : 'dot-gray'}"></span>
-            ${box.data.hostname || box.ip}
+            ${_escH(box.data.hostname || box.ip)}
           </h5>
-          <span class="badge bg-secondary">${box.data.version || '?'}</span>
+          <span class="badge bg-secondary">${_escH(box.data.version || '?')}</span>
         </div>
         <div class="small">${title}</div>
         <div class="small text-muted">${artist}</div>

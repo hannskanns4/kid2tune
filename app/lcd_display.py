@@ -373,8 +373,11 @@ def main():
     lcd, cols = init_lcd(cfg)
 
     if lcd is None:
-        log.error("LCD not available – daemon stopped.")
-        sys.exit(1)
+        # Runs inside a daemon thread (hardware_daemon.run_lcd): sys.exit() would
+        # raise SystemExit, which is not caught by the thread's `except Exception`
+        # and would silently kill only the LCD thread. Return cleanly instead.
+        log.error("LCD not available – LCD display disabled.")
+        return
 
     rows = cfg.get("lcd", {}).get("rows", 4)
     lcd.clear()
