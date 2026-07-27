@@ -600,11 +600,37 @@
     "save_card": "Als Karte vormerken",
     "saved": "Vorgemerkt"
   },
+  "cards": {
+    "title": "Karten drucken",
+    "desc": "Kartenetiketten im Scheckkartenformat (85,6 × 54 mm) mit Cover zum Ausdrucken und Aufkleben. Karten anklicken zum Ab-/Auswählen, dann drucken – am besten auf dickem Papier, randlos oder mit 100 % Skalierung (nicht \"an Seite anpassen\").",
+    "print": "Drucken",
+    "select_all": "Alle auswählen",
+    "deselect_all": "Alle abwählen",
+    "no_cards": "Noch keine Karten oder Vormerkungen vorhanden.",
+    "pending_badge": "vorgemerkt"
+  },
   "security": {
     "no_package": "Kein Paket empfangen.",
     "unsafe_path": "Unsicherer Pfad: {name}",
     "symlink": "Symlinks nicht erlaubt: {name}",
-    "traversal": "Pfad-Traversal: {name}"
+    "traversal": "Pfad-Traversal: {name}",
+    "section_title": "Sicherheit – Erwachsenenbereich",
+    "section_desc": "Schützt die Einstellungen mit einer PIN. Kinder können weiter Musik abspielen und die Lautstärke ändern – nur die Einstellungen sind gesperrt.",
+    "enable_label": "Erwachsenenbereich mit PIN schützen",
+    "pin_label": "PIN (4–8 Ziffern)",
+    "pin_placeholder": "z. B. 2468",
+    "pin_repeat": "PIN wiederholen",
+    "pin_mismatch": "Die beiden PINs stimmen nicht überein.",
+    "pin_format": "PIN muss aus 4–8 Ziffern bestehen.",
+    "pin_required": "Zum Aktivieren muss eine PIN gesetzt werden.",
+    "lock_now": "Jetzt sperren",
+    "area_title": "Erwachsenenbereich",
+    "enter_pin": "Bitte PIN eingeben, um die Einstellungen zu öffnen.",
+    "unlock": "Entsperren",
+    "wrong_pin": "Falsche PIN.",
+    "too_many_attempts": "Zu viele Fehlversuche – bitte {seconds} Sekunden warten.",
+    "locked_msg": "Erwachsenenbereich gesperrt – bitte erst auf der Einstellungen-Seite entsperren.",
+    "cli_hint": "PIN vergessen? Auf der Box per SSH: sudo python3 /opt/lms-controller/pin_tool.py set <neue PIN>  (oder \"disable\" zum Abschalten)."
   },
   "lcd_layout": {
     "title": "LCD-Layout (Play-Modus)",

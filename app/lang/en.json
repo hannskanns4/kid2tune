@@ -600,11 +600,37 @@
     "save_card": "Save as card",
     "saved": "Saved"
   },
+  "cards": {
+    "title": "Print cards",
+    "desc": "Card labels in credit-card size (85.6 × 54 mm) with cover art, ready to print and stick on. Click cards to select/deselect, then print – ideally on thick paper at 100% scale (not \"fit to page\").",
+    "print": "Print",
+    "select_all": "Select all",
+    "deselect_all": "Deselect all",
+    "no_cards": "No cards or pre-saved entries yet.",
+    "pending_badge": "pre-saved"
+  },
   "security": {
     "no_package": "No package received.",
     "unsafe_path": "Unsafe path: {name}",
     "symlink": "Symlinks not allowed: {name}",
-    "traversal": "Path traversal: {name}"
+    "traversal": "Path traversal: {name}",
+    "section_title": "Security – adult area",
+    "section_desc": "Protects the settings with a PIN. Kids can still play music and change the volume – only the settings are locked.",
+    "enable_label": "Protect adult area with a PIN",
+    "pin_label": "PIN (4–8 digits)",
+    "pin_placeholder": "e.g. 2468",
+    "pin_repeat": "Repeat PIN",
+    "pin_mismatch": "The two PINs do not match.",
+    "pin_format": "PIN must be 4–8 digits.",
+    "pin_required": "A PIN must be set to enable protection.",
+    "lock_now": "Lock now",
+    "area_title": "Adult area",
+    "enter_pin": "Please enter the PIN to open the settings.",
+    "unlock": "Unlock",
+    "wrong_pin": "Wrong PIN.",
+    "too_many_attempts": "Too many failed attempts – please wait {seconds} seconds.",
+    "locked_msg": "Adult area locked – please unlock on the settings page first.",
+    "cli_hint": "Forgot the PIN? Via SSH on the box: sudo python3 /opt/lms-controller/pin_tool.py set <new PIN>  (or \"disable\" to switch off)."
   },
   "lcd_layout": {
     "title": "LCD Layout (Play Mode)",

@@ -9,7 +9,8 @@ import time
 import logging
 import threading
 from datetime import datetime
-from flask import Flask, render_template, request, jsonify, redirect, url_for
+from functools import wraps
+from flask import Flask, render_template, request, jsonify, redirect, url_for, session
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,10 +42,121 @@ app = Flask(__name__, template_folder=os.path.join(DIR, "templates"),
             static_folder=os.path.join(DIR, "static"))
 
 
+def _ensure_secret_key() -> str:
+    """Session secret for Flask, generated once and stored in config.json."""
+    import secrets as _secrets
+    cfg = config_manager.read_config()
+    secret = cfg.get("web_secret", "")
+    if not secret:
+        secret = _secrets.token_hex(32)
+        def _update(c):
+            # Another process may have generated one in the meantime
+            if not c.get("web_secret"):
+                c["web_secret"] = secret
+        config_manager.update_config(_update)
+        secret = config_manager.read_config().get("web_secret", secret)
+    return secret
+
+
+app.secret_key = _ensure_secret_key()
+
+
 @app.context_processor
 def inject_i18n():
     """Makes t() and the current language available in all templates."""
     return {"t": i18n.t, "current_lang": i18n.get_language()}
+
+
+# ── Adult area (PIN protection, opt-in) ──────────────────────────────────────
+# PIN hashing lives in security_manager; pin_tool.py resets the PIN via CLI.
+
+ADULT_SESSION_MINUTES = 30
+_pin_fail_count = 0
+_pin_lockout_until = 0.0
+
+
+def _adult_locked() -> bool:
+    """True if the adult area is enabled and this session is not unlocked."""
+    import security_manager
+    if not security_manager.is_enabled():
+        return False
+    ts = session.get("adult_unlock_ts", 0)
+    return (time.time() - ts) > ADULT_SESSION_MINUTES * 60
+
+
+def require_adult(f):
+    """Guard for adult-area API routes: 403 if locked.
+    NEVER use on routes that boxes call among each other (e.g.
+    /api/update/git, /api/update/package) — those have no browser session."""
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        if _adult_locked():
+            return jsonify({"ok": False, "locked": True,
+                            "message": i18n.t("security.locked_msg")}), 403
+        return f(*args, **kwargs)
+    return wrapper
+
+
+@app.route("/api/security/status")
+def api_security_status():
+    import security_manager
+    return jsonify({"enabled": security_manager.is_enabled(),
+                    "locked": _adult_locked()})
+
+
+@app.route("/api/security/unlock", methods=["POST"])
+def api_security_unlock():
+    """Verifies the PIN and unlocks the adult area for this session."""
+    global _pin_fail_count, _pin_lockout_until
+    import security_manager
+    if time.time() < _pin_lockout_until:
+        wait = int(_pin_lockout_until - time.time()) + 1
+        return jsonify({"ok": False,
+                        "message": i18n.t("security.too_many_attempts", seconds=wait)}), 429
+    pin = (request.json or {}).get("pin", "").strip()
+    if security_manager.verify_pin(pin):
+        _pin_fail_count = 0
+        session["adult_unlock_ts"] = time.time()
+        return jsonify({"ok": True})
+    _pin_fail_count += 1
+    if _pin_fail_count >= 5:
+        _pin_lockout_until = time.time() + 60
+        _pin_fail_count = 0
+    time.sleep(0.5)  # slow down brute force
+    return jsonify({"ok": False, "message": i18n.t("security.wrong_pin")}), 401
+
+
+@app.route("/api/security/lock", methods=["POST"])
+def api_security_lock():
+    session.pop("adult_unlock_ts", None)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/security/config", methods=["POST"])
+@require_adult
+def api_security_config():
+    """Enables/disables the adult area and sets the PIN.
+    Only reachable when the area is disabled or the session is unlocked."""
+    import security_manager
+    data = request.json or {}
+    enabled = bool(data.get("enabled"))
+    pin = (data.get("pin") or "").strip()
+
+    if enabled:
+        if pin:
+            if not security_manager.pin_valid_format(pin):
+                return jsonify({"ok": False,
+                                "message": i18n.t("security.pin_format")}), 400
+            security_manager.set_pin(pin)
+        elif not security_manager.has_pin():
+            return jsonify({"ok": False,
+                            "message": i18n.t("security.pin_required")}), 400
+        security_manager.set_enabled(True)
+        # The session that enabled protection stays unlocked
+        session["adult_unlock_ts"] = time.time()
+    else:
+        security_manager.set_enabled(False)
+    return jsonify({"ok": True, "enabled": enabled})
 
 
 def load_config() -> dict:
@@ -1111,6 +1223,7 @@ def update_package():
 
 
 @app.route("/api/update/trigger", methods=["POST"])
+@require_adult
 def update_trigger():
     """Bundles ALL local code files and sends them to all boxes on the network.
     Uses the same file list as the git update (update_manager.iter_code_files),
@@ -1166,6 +1279,7 @@ def update_git():
 
 
 @app.route("/api/update/git/all", methods=["POST"])
+@require_adult
 def update_git_all():
     """Updates all boxes on the network via git pull.
     Runs completely asynchronously — response returns immediately."""
@@ -1234,6 +1348,7 @@ def update_token_get():
 
 
 @app.route("/api/update/token", methods=["POST"])
+@require_adult
 def update_token_set():
     data = request.json or {}
     token = data.get("token", "").strip()
@@ -1317,6 +1432,64 @@ def api_artwork_lms():
         return resp
     except Exception:
         return "", 404
+
+
+_resolve_cache = {}  # value -> artwork url ("" = resolved, none found)
+
+
+@app.route("/api/artwork/resolve")
+def api_artwork_resolve():
+    """Resolves artwork for a mapping value (for card printing etc.).
+    Spotify links via public oEmbed (no API key), otherwise the artwork
+    stored in the play history for the same value."""
+    import re as _re
+    value = (request.args.get("value") or "").strip()
+    if not value:
+        return jsonify({"artwork": ""})
+    if value in _resolve_cache:
+        return jsonify({"artwork": _resolve_cache[value]})
+
+    artwork = ""
+    # 1. Spotify: spotify:album:ID / open.spotify.com links -> oEmbed thumbnail
+    url = None
+    m = _re.match(r"spotify:(track|album|playlist|artist|show|episode):([A-Za-z0-9]+)", value)
+    if m:
+        url = f"https://open.spotify.com/{m.group(1)}/{m.group(2)}"
+    elif "open.spotify.com/" in value:
+        url = value
+    if url:
+        try:
+            import requests as _req
+            r = _req.get("https://open.spotify.com/oembed",
+                         params={"url": url}, timeout=6)
+            if r.status_code == 200:
+                artwork = (r.json().get("thumbnail_url") or "").strip()
+        except Exception:
+            pass
+
+    # 2. Fallback: artwork captured in the play history
+    if not artwork:
+        try:
+            for e in play_history.get_history():
+                if e.get("value") == value and e.get("artwork"):
+                    artwork = e["artwork"]
+                    break
+        except Exception:
+            pass
+
+    _resolve_cache[value] = artwork
+    return jsonify({"artwork": artwork})
+
+
+# ── Card printing ────────────────────────────────────────────────────────────
+
+@app.route("/cards")
+def cards_page():
+    """Printable card labels (credit-card size) for all mappings."""
+    cfg = load_config()
+    mappings = cfg.get("rfid_mappings", {})
+    pending = cfg.get("pending_mappings", [])
+    return render_template("cards.html", mappings=mappings, pending=pending)
 
 
 # ── LMS Server Restart ──────────────────────────────────────────────────────
@@ -1501,6 +1674,8 @@ def api_reboot():
 @app.route("/settings")
 def settings_page():
     import socket
+    if _adult_locked():
+        return render_template("pin.html")
     cfg = load_config()
     sd = cfg.get("shutdown", {})
     version = "?"
@@ -1514,14 +1689,17 @@ def settings_page():
         "hold_time": sd.get("hold_time", 5),
         "confirm_timeout": sd.get("confirm_timeout", 15),
     }
+    import security_manager
     return render_template("settings.html",
                            hostname=socket.gethostname(),
                            version=version,
                            settings=settings,
+                           security_enabled=security_manager.is_enabled(),
                            languages=i18n.available_languages())
 
 
 @app.route("/api/settings", methods=["POST"])
+@require_adult
 def api_settings():
     data = request.json or {}
     def _update(cfg):
@@ -1536,6 +1714,7 @@ def api_settings():
 
 
 @app.route("/api/hostname", methods=["POST"])
+@require_adult
 def api_hostname():
     """Changes the hostname of the box and reboots."""
     import subprocess

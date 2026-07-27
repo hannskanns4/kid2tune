@@ -69,6 +69,37 @@
     </div>
   </div>
 
+  <!-- Security / adult area -->
+  <div class="card p-4 mb-4">
+    <h5>&#128274; {{ t("security.section_title") }}</h5>
+    <p class="text-muted small">{{ t("security.section_desc") }}</p>
+    <div class="form-check form-switch mb-3">
+      <input class="form-check-input" type="checkbox" id="sec-enabled" {{ 'checked' if security_enabled }}>
+      <label class="form-check-label" for="sec-enabled">{{ t("security.enable_label") }}</label>
+    </div>
+    <div class="row g-2 align-items-end">
+      <div class="col-md-3">
+        <label class="form-label small">{{ t("security.pin_label") }}</label>
+        <input type="password" inputmode="numeric" maxlength="8" autocomplete="new-password"
+               class="form-control form-control-sm" id="sec-pin"
+               placeholder="{{ t('security.pin_placeholder') }}">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label small">{{ t("security.pin_repeat") }}</label>
+        <input type="password" inputmode="numeric" maxlength="8" autocomplete="new-password"
+               class="form-control form-control-sm" id="sec-pin2">
+      </div>
+      <div class="col-md-3">
+        <button class="btn btn-success btn-sm" onclick="saveSecurity()">{{ t("common.save") }}</button>
+      </div>
+      <div class="col-md-3 text-md-end">
+        <button class="btn btn-outline-warning btn-sm" onclick="lockNow()" id="btn-lock-now"
+                {{ '' if security_enabled else 'style=display:none;' }}>&#128274; {{ t("security.lock_now") }}</button>
+      </div>
+    </div>
+    <p class="text-muted small mt-2 mb-0">{{ t("security.cli_hint") }}</p>
+  </div>
+
   <!-- System actions -->
   <div class="card p-4 mb-4">
     <h5>&#128268; {{ t("settings.system_title") }}</h5>
@@ -156,6 +187,7 @@ const MSG_UPDATING = {{ t("settings.msg_updating")|tojson }};
 const MSG_UPDATE_ALL_CONFIRM = {{ t("settings.msg_update_all_confirm")|tojson }};
 const MSG_UPDATE_ALL_RUNNING = {{ t("settings.msg_update_all_running")|tojson }};
 const MSG_TOKEN_SET = {{ t("settings.msg_token_set")|tojson }};
+const MSG_SEC_PIN_MISMATCH = {{ t("security.pin_mismatch")|tojson }};
 const MSG_LMS_CHECKING  = {{ t("lms.plugins_checking")|tojson }};
 const MSG_LMS_UPTODATE  = {{ t("lms.plugins_uptodate")|tojson }};
 const MSG_LMS_OFFLINE   = {{ t("lms.plugins_offline")|tojson }};
@@ -171,6 +203,31 @@ const MSG_LMS_RESTART   = {{ t("lms.restart")|tojson }};
 document.getElementById('hostname').addEventListener('input', function(){
   document.getElementById('hostname-preview').textContent = this.value + '.fritz.box';
 });
+
+// ── Security / adult area ───────────────────────────────────────────────────
+function saveSecurity(){
+  const enabled = document.getElementById('sec-enabled').checked;
+  const pin  = document.getElementById('sec-pin').value.trim();
+  const pin2 = document.getElementById('sec-pin2').value.trim();
+  if(pin !== pin2){ alert(MSG_SEC_PIN_MISMATCH); return; }
+  fetch('/api/security/config', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({enabled: enabled, pin: pin})
+  }).then(r=>r.json()).then(d=>{
+    if(d.ok){
+      alert(MSG_SETTINGS_SAVED);
+      document.getElementById('sec-pin').value = '';
+      document.getElementById('sec-pin2').value = '';
+      document.getElementById('btn-lock-now').style.display = d.enabled ? '' : 'none';
+    } else {
+      alert(MSG_ERROR + ' ' + (d.message || ''));
+    }
+  }).catch(e => alert(MSG_ERROR + ' ' + e));
+}
+function lockNow(){
+  fetch('/api/security/lock', {method:'POST'}).then(()=>location.reload());
+}
 
 function setLanguage(lang){
   fetch('/api/language',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({language:lang})})

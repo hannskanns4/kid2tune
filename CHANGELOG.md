@@ -3,6 +3,26 @@
 All notable changes to this project are documented here.
 Versioning: **X.Y.Z** — X = major, Y = feature, Z = bugfix.
 
+## [2.12.0] – 2026-07-27
+
+### Added
+- **Erwachsenenbereich mit PIN (opt-in)**: Neuer Bereich „Sicherheit" in den
+  Einstellungen. Aktiviert man den Schutz, verlangt die Einstellungen-Seite
+  eine PIN (4–8 Ziffern); auch die sensiblen APIs (Zeiten, Hostname,
+  GitHub-Token, Netzwerk-Update) sind dann gesperrt. Abspielen/Lautstärke
+  bleiben für Kinder frei. PIN als PBKDF2-Hash in config.json
+  (`security_manager.py`), Session 30 min gültig, Brute-Force-Bremse
+  (5 Fehlversuche → 60 s Sperre). Standard: AUS – muss aktiv angeschaltet werden
+- **PIN-Reset per CLI**: `sudo python3 /opt/lms-controller/pin_tool.py set <PIN>`
+  setzt eine neue PIN, `disable` schaltet den Schutz ab, `status` zeigt den
+  Zustand – für den Fall, dass die PIN verloren geht
+- **Karten drucken**: Neue Seite `/cards` (Button auf der RFID-Seite) rendert
+  alle Mappings + Vormerkungen als Etiketten im Scheckkartenformat
+  (85,6 × 53,98 mm, Eckenradius wie echte Karten) mit Cover-Bild und Label –
+  zum Ausdrucken und Aufkleben. Cover kommen per Spotify-oEmbed (ohne API-Key)
+  oder aus dem Verlaufs-Artwork (`/api/artwork/resolve`); Auswahl per Klick,
+  Schnittkanten gestrichelt, 8 Karten pro A4-Seite
+
 ## [2.11.2] – 2026-07-27
 
 ### Fixed

@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}{{ t("security.area_title") }} – kid2tune{% endblock %}
+
+{% block content %}
+<div class="container mt-5" style="max-width: 420px;">
+  <div class="card p-4 text-center">
+    <div style="font-size: 3rem;">&#128274;</div>
+    <h4 class="mt-2">{{ t("security.area_title") }}</h4>
+    <p class="text-muted small">{{ t("security.enter_pin") }}</p>
+    <input type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8"
+           class="form-control form-control-lg text-center mb-3" id="pin-input"
+           autocomplete="off" autofocus
+           onkeydown="if(event.key==='Enter')unlock()">
+    <button class="btn btn-success btn-lg" onclick="unlock()" id="btn-unlock">
+      {{ t("security.unlock") }}
+    </button>
+    <div class="text-danger small mt-3" id="pin-error" style="display:none;"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function unlock(){
+  const pin = document.getElementById('pin-input').value.trim();
+  if(!pin) return;
+  const btn = document.getElementById('btn-unlock');
+  const err = document.getElementById('pin-error');
+  btn.disabled = true;
+  err.style.display = 'none';
+  fetch('/api/security/unlock', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({pin: pin})
+  }).then(r => r.json().then(d => ({status: r.status, d: d}))).then(({status, d}) => {
+    if(d.ok){
+      location.reload();
+    } else {
+      btn.disabled = false;
+      document.getElementById('pin-input').value = '';
+      err.textContent = d.message || '?';
+      err.style.display = '';
+      document.getElementById('pin-input').focus();
+    }
+  }).catch(() => { btn.disabled = false; });
+}
+</script>
+{% endblock %}

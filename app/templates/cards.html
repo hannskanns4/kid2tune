@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% block title %}{{ t("cards.title") }} – kid2tune{% endblock %}
+
+{% block head %}
+<style>
+/* ── Card labels in credit-card format (ISO/IEC 7810 ID-1) ─────────────── */
+.cards-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6mm;
+}
+.print-card {
+  width: 85.6mm;
+  height: 53.98mm;
+  border-radius: 3.18mm;
+  overflow: hidden;
+  border: 0.3mm dashed #8899bb;
+  display: flex;
+  background: #fff;
+  color: #111;
+  position: relative;
+  page-break-inside: avoid;
+  break-inside: avoid;
+}
+.print-card.pc-skip { opacity: 0.35; }
+.pc-cover {
+  position: relative;
+  width: 43mm;
+  height: 100%;
+  flex-shrink: 0;
+  background: #e8ecf2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12mm;
+  color: #9aa8c0;
+}
+.pc-cover img {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  object-fit: cover;
+  display: none;
+}
+.pc-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 3mm 4mm;
+}
+.pc-label {
+  font-weight: 700;
+  font-size: 4.4mm;
+  line-height: 1.25;
+  color: #111;
+  max-height: 33mm;
+  overflow: hidden;
+  word-wrap: break-word;
+}
+.pc-sub { margin-top: 2mm; font-size: 2.8mm; color: #889; }
+.pc-check {
+  position: absolute;
+  top: 2mm;
+  right: 2mm;
+  transform: scale(1.4);
+}
+@media print {
+  nav, .no-print, #standby-banner { display: none !important; }
+  body { background: #fff !important; }
+  .container-cards { margin: 0 !important; padding: 0 !important; max-width: none !important; }
+  .print-card { border-color: #bbb; }
+  .print-card.pc-skip { display: none !important; }
+  .pc-check { display: none !important; }
+  @page { size: A4; margin: 8mm; }
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container mt-4 container-cards">
+  <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2 no-print">
+    <h4 class="mb-0">&#127183; {{ t("cards.title") }}</h4>
+    <div class="d-flex gap-2 flex-wrap">
+      <button class="btn btn-outline-light btn-sm" onclick="selectAll(true)">{{ t("cards.select_all") }}</button>
+      <button class="btn btn-outline-light btn-sm" onclick="selectAll(false)">{{ t("cards.deselect_all") }}</button>
+      <button class="btn btn-success btn-sm" onclick="window.print()">&#128424; {{ t("cards.print") }}</button>
+    </div>
+  </div>
+  <p class="text-muted small no-print">{{ t("cards.desc") }}</p>
+
+  {% if not mappings and not pending %}
+  <p class="text-muted text-center mt-4">{{ t("cards.no_cards") }}</p>
+  {% endif %}
+
+  <div class="cards-grid mb-4">
+    {% for uid, m in mappings.items() %}
+    <div class="print-card" data-value="{{ m.value }}">
+      <input type="checkbox" class="pc-check no-print" checked onchange="toggleCard(this)">
+      <div class="pc-cover">&#9834;<img alt=""></div>
+      <div class="pc-text">
+        <div class="pc-label">{{ m.label or uid }}</div>
+        <div class="pc-sub">kid2tune</div>
+      </div>
+    </div>
+    {% endfor %}
+    {% for p in pending %}
+    <div class="print-card" data-value="{{ p.value }}">
+      <input type="checkbox" class="pc-check no-print" checked onchange="toggleCard(this)">
+      <div class="pc-cover">&#9834;<img alt=""></div>
+      <div class="pc-text">
+        <div class="pc-label">{{ p.label or p.value }}</div>
+        <div class="pc-sub">kid2tune &middot; {{ t("cards.pending_badge") }}</div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function toggleCard(cb){
+  cb.closest('.print-card').classList.toggle('pc-skip', !cb.checked);
+}
+function selectAll(state){
+  document.querySelectorAll('.print-card').forEach(card => {
+    card.classList.toggle('pc-skip', !state);
+    const cb = card.querySelector('.pc-check');
+    if(cb) cb.checked = state;
+  });
+}
+
+function artSrc(a){
+  if(!a) return '';
+  if(/^https?:\/\//.test(a)) return a;
+  return '/api/artwork/lms?path=' + encodeURIComponent(a);
+}
+
+// Resolve artwork per card (Spotify oEmbed / play-history), then show image
+document.querySelectorAll('.print-card').forEach(card => {
+  const value = card.dataset.value || '';
+  if(!value) return;
+  fetch('/api/artwork/resolve?value=' + encodeURIComponent(value))
+    .then(r => r.json())
+    .then(d => {
+      const src = artSrc(d.artwork);
+      if(!src) return;
+      const img = card.querySelector('.pc-cover img');
+      img.onload = () => { img.style.display = 'block'; };
+      img.src = src;
+    }).catch(()=>{});
+});
+</script>
+{% endblock %}
