@@ -84,10 +84,12 @@ def record_play(item_type: str, value: str, label: str = ""):
     # Remove existing entry with same value (move-to-top), keep its metadata
     prev_title = ""
     prev_artist = ""
+    prev_artwork = ""
     for e in entries:
         if e.get("value") == value:
             prev_title = e.get("title", "") or ""
             prev_artist = e.get("artist", "") or ""
+            prev_artwork = e.get("artwork", "") or ""
             break
     entries = [e for e in entries if e.get("value") != value]
     entry = {
@@ -96,6 +98,7 @@ def record_play(item_type: str, value: str, label: str = ""):
         "value":  value,
         "title":  prev_title,
         "artist": prev_artist,
+        "artwork": prev_artwork,
         "timestamp": time.time(),
     }
     entries.insert(0, entry)
@@ -105,31 +108,40 @@ def record_play(item_type: str, value: str, label: str = ""):
     except Exception as e:
         log.warning(f"play_history write failed: {e}")
 
-    needs_metadata = (not label) or label.startswith(("http", "spotify:"))
-    if needs_metadata:
-        threading.Thread(target=_fetch_metadata_later,
-                         args=(value,), daemon=True).start()
+    # Artwork is always fetched after the fact; title/artist only if the
+    # label is missing or is just a raw link
+    update_text = (not label) or label.startswith(("http", "spotify:"))
+    threading.Thread(target=_fetch_metadata_later,
+                     args=(value, update_text), daemon=True).start()
 
 
-def _fetch_metadata_later(value: str):
-    """After a short delay, query LMS for current title/artist and update
-    the matching history entry. Best-effort, silently fails."""
+def _fetch_metadata_later(value: str, update_text: bool = True):
+    """After a short delay, query LMS for current title/artist/artwork and
+    update the matching history entry. Best-effort, silently fails."""
     try:
         time.sleep(3)
         import lms_client
         status = lms_client.get_status()
         title = (status.get("title") or "").strip()
         artist = (status.get("artist") or "").strip()
-        if not title:
+        artwork = (status.get("artwork") or "").strip()
+        if not title and not artwork:
             return
         entries = _read()
+        changed = False
         for e in entries:
             if e.get("value") == value:
-                e["title"] = title
-                e["artist"] = artist
-                if not e.get("label") or e["label"] == value:
-                    e["label"] = title
+                if artwork:
+                    e["artwork"] = artwork
+                    changed = True
+                if update_text and title:
+                    e["title"] = title
+                    e["artist"] = artist
+                    if not e.get("label") or e["label"] == value:
+                        e["label"] = title
+                    changed = True
                 break
-        _write(entries)
+        if changed:
+            _write(entries)
     except Exception as e:
         log.debug(f"metadata fetch failed: {e}")

@@ -1063,23 +1063,10 @@ def multiroom_unsync_all():
 
 @app.route("/api/update/version")
 def update_version():
-    """Returns file hashes for version comparison."""
-    import hashlib
+    """Returns file hashes for version comparison (ALL code files)."""
     files = {}
-    for f in os.listdir(DIR):
-        if f.endswith((".py", ".txt")):
-            path = os.path.join(DIR, f)
-            with open(path, "rb") as fh:
-                h = hashlib.md5(fh.read()).hexdigest()
-            files[f] = h
-    tpl_dir = os.path.join(DIR, "templates")
-    if os.path.isdir(tpl_dir):
-        for f in os.listdir(tpl_dir):
-            if f.endswith(".html"):
-                path = os.path.join(tpl_dir, f)
-                with open(path, "rb") as fh:
-                    h = hashlib.md5(fh.read()).hexdigest()
-                files[f"templates/{f}"] = h
+    for rel in update_manager.iter_code_files(DIR):
+        files[rel] = update_manager.file_md5(os.path.join(DIR, rel))
     version = "?"
     vf = os.path.join(DIR, "version.txt")
     if os.path.exists(vf):
@@ -1107,7 +1094,10 @@ def update_package():
             target = os.path.realpath(os.path.join(DIR, member.name))
             if not target.startswith(os.path.realpath(DIR)):
                 return jsonify({"ok": False, "message": i18n.t("security.traversal", name=member.name)}), 400
-        tar.extractall(path=DIR, filter="data")
+        # Runtime data (config, history) must never come from a package
+        safe_members = [m for m in tar.getmembers()
+                        if os.path.basename(m.name) not in update_manager.PROTECTED_FILES]
+        tar.extractall(path=DIR, members=safe_members, filter="data")
         tar.close()
         # Restart services (others first, lms-web last since it's our own process)
         subprocess.run(["systemctl", "restart", "lms-rfid", "lms-hardware"],
@@ -1122,24 +1112,15 @@ def update_package():
 
 @app.route("/api/update/trigger", methods=["POST"])
 def update_trigger():
-    """Bundles local files and sends them to all boxes on the network."""
+    """Bundles ALL local code files and sends them to all boxes on the network.
+    Uses the same file list as the git update (update_manager.iter_code_files),
+    so no category (e.g. static/) can be forgotten."""
     import tarfile, io
     # Create tar.gz
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        for f in os.listdir(DIR):
-            if f.endswith((".py", ".txt", ".json")) and f not in ("config.json", "config.json.lock", "sync_pending.json"):
-                tar.add(os.path.join(DIR, f), arcname=f)
-        tpl_dir = os.path.join(DIR, "templates")
-        if os.path.isdir(tpl_dir):
-            for f in os.listdir(tpl_dir):
-                if f.endswith(".html"):
-                    tar.add(os.path.join(tpl_dir, f), arcname=f"templates/{f}")
-        lang_dir = os.path.join(DIR, "lang")
-        if os.path.isdir(lang_dir):
-            for f in os.listdir(lang_dir):
-                if f.endswith(".json"):
-                    tar.add(os.path.join(lang_dir, f), arcname=f"lang/{f}")
+        for rel in update_manager.iter_code_files(DIR):
+            tar.add(os.path.join(DIR, rel), arcname=rel)
     buf.seek(0)
     package_data = buf.read()
 
@@ -1292,6 +1273,50 @@ def api_history_play():
 def api_history_clear():
     play_history.clear_history()
     return jsonify({"ok": True})
+
+
+# ── Artwork (Cover-Proxy zum LMS) ────────────────────────────────────────────
+
+@app.route("/api/artwork/current")
+def api_artwork_current():
+    """Cover of the currently playing track, proxied from LMS."""
+    import requests as _req
+    url = lms_client.get_current_artwork_url()
+    if not url:
+        return "", 404
+    try:
+        r = _req.get(url, timeout=5)
+        if r.status_code != 200 or not r.content:
+            return "", 404
+        resp = app.response_class(
+            r.content, mimetype=r.headers.get("Content-Type", "image/jpeg"))
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+    except Exception:
+        return "", 404
+
+
+# Only artwork paths may be proxied — no open proxy to arbitrary LMS URLs
+_ARTWORK_PREFIXES = ("/music/", "/imageproxy/", "/html/", "/plugins/")
+
+
+@app.route("/api/artwork/lms")
+def api_artwork_lms():
+    """Proxies an LMS-relative artwork path (e.g. /music/<id>/cover.jpg)."""
+    import requests as _req
+    path = (request.args.get("path") or "").strip()
+    if not path.startswith(_ARTWORK_PREFIXES) or ".." in path:
+        return "", 400
+    try:
+        r = _req.get(lms_client.lms_base_url() + path, timeout=5)
+        if r.status_code != 200 or not r.content:
+            return "", 404
+        resp = app.response_class(
+            r.content, mimetype=r.headers.get("Content-Type", "image/jpeg"))
+        resp.headers["Cache-Control"] = "public, max-age=86400"
+        return resp
+    except Exception:
+        return "", 404
 
 
 # ── LMS Server Restart ──────────────────────────────────────────────────────

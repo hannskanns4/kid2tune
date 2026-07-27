@@ -46,6 +46,31 @@ function fmtAge(ts){
   return Math.round(diff/86400) + 'd';
 }
 
+function artSrc(it){
+  const a = it.artwork || '';
+  if(!a) return '';
+  if(/^https?:\/\//.test(a)) return a;
+  return '/api/artwork/lms?path=' + encodeURIComponent(a);
+}
+
+function thumbHtml(it){
+  const src = artSrc(it);
+  const ph = `<div class="history-thumb history-thumb-placeholder"${src ? ' style="display:none;"' : ''}>&#9834;</div>`;
+  if(!src) return ph;
+  return `<img class="history-thumb" src="${escapeHtml(src)}" alt=""
+               onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">` + ph;
+}
+
+function typeBadge(it){
+  const v = it.value || '';
+  if(v.startsWith('spotify:') || v.includes('open.spotify.com'))
+    return '<span class="badge badge-spotify">Spotify</span>';
+  if((it.type || '') === 'url')
+    return '<span class="badge badge-url">URL</span>';
+  return '<span class="badge bg-secondary">' + escapeHtml(it.type || '') + '</span>';
+}
+
+let _items = [];
 function renderHistory(items){
   const list = document.getElementById('history-list');
   list.innerHTML = '';
@@ -53,32 +78,32 @@ function renderHistory(items){
     list.innerHTML = '<p class="text-muted text-center mt-4">'+ _th.empty +'</p>';
     return;
   }
+  _items = items;
   items.forEach((it, idx) => {
     const card = document.createElement('div');
     card.className = 'card p-3';
     const title  = escapeHtml(it.title || it.label || _th.unknown_title);
     const artist = escapeHtml(it.artist || '');
     const value  = escapeHtml(it.value || '');
-    const type   = escapeHtml(it.type || '');
     const age    = fmtAge(it.timestamp);
     card.innerHTML = `
-      <div class="d-flex justify-content-between align-items-center gap-2 flex-wrap">
+      <div class="d-flex align-items-center gap-3 flex-wrap">
+        ${thumbHtml(it)}
         <div class="flex-grow-1" style="min-width:0;">
-          <div class="fw-bold text-truncate">${title}</div>
-          ${artist ? '<div class="small text-muted text-truncate">'+artist+'</div>' : ''}
-          <div class="small text-muted text-truncate">
-            <span class="badge bg-secondary">${type}</span>
-            ${value}
+          <div class="history-title text-truncate">${title}</div>
+          ${artist ? '<div class="history-artist text-truncate">'+artist+'</div>' : ''}
+          <div class="history-meta text-truncate">
+            ${typeBadge(it)}
+            <span class="ms-1">${value}</span>
           </div>
         </div>
         <div class="d-flex align-items-center gap-2">
-          <span class="small text-muted">${age}</span>
+          <span class="history-meta history-age" data-ts="${it.timestamp || ''}">${age}</span>
           <button class="btn btn-outline-light btn-sm"
-                  onclick='savePending(${JSON.stringify(it)}, this)' title="${_th.save_card}">
+                  onclick="savePending(${idx}, this)" title="${_th.save_card}">
             &#128190; ${_th.save_card}
           </button>
-          <button class="btn btn-success btn-sm"
-                  onclick='playEntry(${JSON.stringify(it)})'>
+          <button class="btn btn-success btn-sm" onclick="playEntry(${idx})">
             &#9654; ${_th.play_again}
           </button>
         </div>
@@ -87,11 +112,26 @@ function renderHistory(items){
   });
 }
 
+let _lastJson = '';
 function loadHistory(){
-  fetch('/api/history').then(r => r.json()).then(renderHistory).catch(()=>{});
+  fetch('/api/history').then(r => r.json()).then(items => {
+    const j = JSON.stringify(items);
+    if(j === _lastJson) return;   // avoids flicker + keeps button states
+    _lastJson = j;
+    renderHistory(items);
+  }).catch(()=>{});
 }
 
-function playEntry(entry){
+function refreshAges(){
+  document.querySelectorAll('.history-age').forEach(el => {
+    const ts = parseFloat(el.dataset.ts);
+    if(ts) el.textContent = fmtAge(ts);
+  });
+}
+
+function playEntry(idx){
+  const entry = _items[idx];
+  if(!entry) return;
   fetch('/api/history/play', {
     method:'POST',
     headers:{'Content-Type':'application/json'},
@@ -106,7 +146,9 @@ function playEntry(entry){
   }).catch(e => alert(_th.error_msg + ' ' + e));
 }
 
-function savePending(entry, btn){
+function savePending(idx, btn){
+  const entry = _items[idx];
+  if(!entry) return;
   fetch('/rfid/pending/add', {
     method:'POST',
     headers:{'Content-Type':'application/json'},
@@ -128,6 +170,6 @@ function clearHistory(){
 }
 
 loadHistory();
-setInterval(loadHistory, 5000);
+setInterval(() => { loadHistory(); refreshAges(); }, 5000);
 </script>
 {% endblock %}

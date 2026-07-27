@@ -113,6 +113,40 @@ p { color: #d0d8e4; }
 .btn-ctrl { min-width: 60px; }
 #track-title { font-size: 1.4rem; font-weight: bold; color: #fff; }
 #progress { height: 6px; }
+.player-cover {
+  width: 160px;
+  height: 160px;
+  object-fit: cover;
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+}
+
+/* ── History (index preview + history page) ────────────────────────────── */
+.history-thumb {
+  width: 56px;
+  height: 56px;
+  object-fit: cover;
+  border-radius: 8px;
+  background: #0f3460;
+  flex-shrink: 0;
+}
+.history-thumb-sm {
+  width: 40px;
+  height: 40px;
+  border-radius: 6px;
+}
+.history-thumb-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #6f8cbf;
+  font-size: 1.4rem;
+}
+.history-title  { color: #fff; font-weight: 600; }
+.history-artist { color: #c6d4e8; font-size: 0.875rem; }
+.history-meta   { color: #90a6c8; font-size: 0.78rem; }
+.badge-spotify  { background: #1db954; color: #06230f; }
+.badge-url      { background: #3080d0; color: #fff; }
 
 /* ── Badges ─────────────────────────────────────────────────────────────── */
 .badge { font-weight: 500; }

@@ -5,6 +5,9 @@
 <div class="container mt-4">
   <!-- Player -->
   <div class="card p-4 text-center">
+    <div class="d-flex justify-content-center">
+      <img id="track-cover" class="player-cover mb-3" src="" alt="" style="display:none;">
+    </div>
     <div id="track-title">{{ status.get('title', t('common.no_title')) }}</div>
     <div class="text-muted" id="track-artist">{{ status.get('artist','') }}</div>
     <div class="text-muted small" id="track-album">{{ status.get('album','') }}</div>
@@ -129,11 +132,23 @@ fetch('/api/volume_max').then(r=>r.json()).then(d=>{
   document.getElementById('vol-slider').max = volMax;
   document.getElementById('vol-max').value = volMax;
 });
+let lastCoverKey = null;
+function updateCover(d){
+  const img = document.getElementById('track-cover');
+  const key = (d.title||'') + '|' + (d.artist||'') + '|' + (d.album||'');
+  if(key === lastCoverKey) return;
+  lastCoverKey = key;
+  if(!d.title){ img.style.display = 'none'; return; }
+  img.onload  = () => { img.style.display = ''; };
+  img.onerror = () => { img.style.display = 'none'; };
+  img.src = '/api/artwork/current?cb=' + Date.now();
+}
 function refreshPlayer(){
   fetch('/api/status').then(r=>r.json()).then(d=>{
     document.getElementById('track-title').textContent  = d.title  || _tp.no_title;
     document.getElementById('track-artist').textContent = d.artist || '';
     document.getElementById('track-album').textContent  = d.album  || '';
+    updateCover(d);
     const dur=d.duration||0, ela=d.elapsed||0;
     document.getElementById('elapsed').textContent  = fmtTime(ela);
     document.getElementById('duration').textContent = fmtTime(dur);
@@ -412,28 +427,46 @@ function _escH(s){
     '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
   }[c]));
 }
+function _artSrc(it){
+  const a = it.artwork || '';
+  if(!a) return '';
+  if(/^https?:\/\//.test(a)) return a;
+  return '/api/artwork/lms?path=' + encodeURIComponent(a);
+}
+function _thumbHtml(it, sizeClass){
+  const src = _artSrc(it);
+  const ph = `<div class="history-thumb ${sizeClass} history-thumb-placeholder"${src ? ' style="display:none;"' : ''}>&#9834;</div>`;
+  if(!src) return ph;
+  return `<img class="history-thumb ${sizeClass}" src="${_escH(src)}" alt=""
+               onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">` + ph;
+}
+let _histItems = [];
 function renderHistoryPreview(items){
   const card = document.getElementById('history-card');
   const box  = document.getElementById('history-preview');
   if(!items || !items.length){ card.style.display='none'; return; }
   card.style.display='';
   box.innerHTML = '';
-  items.slice(0, 3).forEach(it => {
+  _histItems = items.slice(0, 3);
+  _histItems.forEach((it, idx) => {
     const title  = _escH(it.title || it.label || _tp.unknown_title);
     const artist = _escH(it.artist || '');
     const row = document.createElement('div');
-    row.className = 'd-flex justify-content-between align-items-center gap-2';
+    row.className = 'd-flex align-items-center gap-2';
     row.innerHTML = `
-      <div class="flex-grow-1 text-truncate" style="min-width:0;">
-        <span>${title}</span>
-        ${artist ? '<span class="text-muted small ms-1">— '+artist+'</span>' : ''}
+      ${_thumbHtml(it, 'history-thumb-sm')}
+      <div class="flex-grow-1" style="min-width:0;">
+        <div class="history-title small text-truncate">${title}</div>
+        ${artist ? '<div class="history-artist small text-truncate">'+artist+'</div>' : ''}
       </div>
       <button class="btn btn-success btn-sm text-nowrap"
-              onclick='playHistory(${JSON.stringify(it)})'>&#9654;</button>`;
+              onclick="playHistory(${idx})">&#9654;</button>`;
     box.appendChild(row);
   });
 }
-function playHistory(entry){
+function playHistory(idx){
+  const entry = _histItems[idx];
+  if(!entry) return;
   fetch('/api/history/play', {
     method:'POST',
     headers:{'Content-Type':'application/json'},
@@ -447,8 +480,14 @@ function playHistory(entry){
     else setTimeout(loadHistoryPreview, 500);
   }).catch(e => alert(_tp.error_msg + ' ' + e));
 }
+let _histLastJson = '';
 function loadHistoryPreview(){
-  fetch('/api/history').then(r => r.json()).then(renderHistoryPreview).catch(()=>{});
+  fetch('/api/history').then(r => r.json()).then(items => {
+    const j = JSON.stringify(items);
+    if(j === _histLastJson) return;   // no change → no re-render (avoids flicker)
+    _histLastJson = j;
+    renderHistoryPreview(items);
+  }).catch(()=>{});
 }
 loadHistoryPreview();
 setInterval(loadHistoryPreview, 5000);

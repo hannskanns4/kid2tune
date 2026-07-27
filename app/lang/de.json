@@ -459,6 +459,7 @@
     "hostname_after": "Nach der Änderung wird die Box neugestartet und ist unter",
     "hostname_suffix": ".fritz.box",
     "hostname_reachable": "erreichbar",
+    "hostname_reboot_notice": "Nach Neustart erreichbar unter:",
     "timing_title": "Zeiten & Standby",
     "auto_standby": "Auto-Standby nach Idle (Min.)",
     "auto_standby_help": "0 = deaktiviert",
@@ -466,6 +467,8 @@
     "display_off_help": "LCD-Backlight aus nach X Min. ohne Musik",
     "hold_time": "Button-Haltezeit (Sek.)",
     "hold_time_help": "3 Tasten halten für Standby",
+    "confirm_timeout": "Bestätigungs-Timeout (Sek.)",
+    "confirm_timeout_help": "Zeitfenster zum Bestätigen des Ausschaltens",
     "lcd_timeout": "LCD-Bestätigung Timeout (Sek.)",
     "lcd_timeout_help": "Zeit für Vol+ Bestätigung",
     "save_timing": "Zeiten speichern",
@@ -593,7 +596,9 @@
     "clear": "Verlauf löschen",
     "confirm_clear": "Verlauf wirklich löschen?",
     "recent_short": "Zuletzt abgespielt",
-    "show_all": "Alle anzeigen"
+    "show_all": "Alle anzeigen",
+    "save_card": "Als Karte vormerken",
+    "saved": "Vorgemerkt"
   },
   "security": {
     "no_package": "Kein Paket empfangen.",

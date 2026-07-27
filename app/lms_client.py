@@ -165,20 +165,45 @@ def volume_down(step: int = 5):
 
 def get_status() -> dict:
     """Returns the current playback status."""
-    result = _player_cmd(["status", "-", 1, "tags:adltuK"])
+    result = _player_cmd(["status", "-", 1, "tags:acdltuKJ"])
     pl = result.get("playlist_loop", [{}])
     track = pl[0] if pl else {}
     duration = track.get("duration", 0) or 0
     elapsed = result.get("time", 0) or 0
+    # Artwork: remote streams (Spotify/radio) deliver artwork_url (tag K),
+    # local tracks a coverid (tag c) / artwork_track_id (tag J)
+    artwork = (track.get("artwork_url") or "").strip()
+    if not artwork:
+        cover_id = track.get("coverid") or track.get("artwork_track_id") or ""
+        if cover_id:
+            artwork = f"/music/{cover_id}/cover.jpg"
+    if artwork and not artwork.startswith(("http://", "https://", "/")):
+        artwork = "/" + artwork
     return {
         "mode":     result.get("mode", "stop"),        # play / pause / stop
         "title":    track.get("title", ""),
         "artist":   track.get("artist", ""),
         "album":    track.get("album", ""),
+        "artwork":  artwork,
         "duration": float(duration),
         "elapsed":  float(elapsed),
         "volume":   get_volume(),
     }
+
+
+def lms_base_url() -> str:
+    """Base URL of the LMS HTTP interface (e.g. http://localhost:9000)."""
+    cfg = _cfg()
+    return f"http://{cfg['lms_host']}:{cfg['lms_port']}"
+
+
+def get_current_artwork_url() -> str:
+    """LMS URL for the cover of the currently playing track.
+    Works for local files as well as remote streams (Spotify, radio)."""
+    pid = _get_player_id()
+    if not pid:
+        return ""
+    return f"{lms_base_url()}/music/current/cover.jpg?player={pid}"
 
 
 # ── Library Search ───────────────────────────────────────────────────────────

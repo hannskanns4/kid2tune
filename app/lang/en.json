@@ -459,6 +459,7 @@
     "hostname_after": "After the change, the box will reboot and be available at",
     "hostname_suffix": ".fritz.box",
     "hostname_reachable": "reachable",
+    "hostname_reboot_notice": "After reboot reachable at:",
     "timing_title": "Timing & Standby",
     "auto_standby": "Auto standby after idle (min)",
     "auto_standby_help": "0 = disabled",
@@ -466,6 +467,8 @@
     "display_off_help": "LCD backlight off after X min without music",
     "hold_time": "Button hold time (sec)",
     "hold_time_help": "Hold 3 buttons for standby",
+    "confirm_timeout": "Confirm timeout (sec)",
+    "confirm_timeout_help": "Time window to confirm shutdown",
     "lcd_timeout": "LCD confirmation timeout (sec)",
     "lcd_timeout_help": "Time for Vol+ confirmation",
     "save_timing": "Save timing",
@@ -593,7 +596,9 @@
     "clear": "Clear history",
     "confirm_clear": "Really clear history?",
     "recent_short": "Recently played",
-    "show_all": "Show all"
+    "show_all": "Show all",
+    "save_card": "Save as card",
+    "saved": "Saved"
   },
   "security": {
     "no_package": "No package received.",

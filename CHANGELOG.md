@@ -3,6 +3,58 @@
 All notable changes to this project are documented here.
 Versioning: **X.Y.Z** — X = major, Y = feature, Z = bugfix.
 
+## [2.11.2] – 2026-07-27
+
+### Fixed
+- **Update lässt keine Dateien mehr aus**: Beide Update-Pfade (GitHub-Update
+  und Box-zu-Box-Verteilung) nutzen jetzt dieselbe rekursive Dateiliste
+  (`update_manager.iter_code_files`) statt handgepflegter Kategorien. Vorher
+  fehlte z. B. `static/` komplett im Box-zu-Box-Paket → Boxen liefen mit
+  Versions-Mix (alte rfid.html ohne Vormerkungs-UI trotz neuem Backend)
+- **Update-Verifikation**: Nach dem Kopieren wird jede installierte Datei per
+  MD5 gegen den Clone geprüft; Python-Dateien werden VOR der Installation
+  syntaxgeprüft (kaputter Repo-Stand wird nie installiert); Kopieren jetzt
+  atomar pro Datei (temp + rename)
+- **Versions-Check**: liest `app/version.txt` vom aktuellen Branch statt
+  Git-Tags (Tags standen bei v2.9.1 → Check meldete falsche Versionen)
+- **Schutz der Laufzeitdaten**: `play_history.json` (+Lock) zusätzlich zu
+  `config.json`/`sync_pending.json` geschützt – auch beim Empfang von
+  Box-zu-Box-Paketen (Absender-Filter + Empfänger-Filter)
+- **Token-Leak**: GitHub-Token wird aus Fehlermeldungen/Logs des Updaters
+  entfernt (stand vorher im Klartext in der Clone-URL-Fehlermeldung)
+
+## [2.11.1] – 2026-07-27
+
+### Fixed
+- **Fehlende Übersetzungen**: 5 Keys fehlten in `de.json`/`en.json` → UI zeigte
+  rohe Key-Strings: `history.save_card`, `history.saved` (Verlaufsseite),
+  `settings.confirm_timeout`, `settings.confirm_timeout_help`,
+  `settings.hostname_reboot_notice` (Einstellungen). Vollständiger Key-Scan
+  über alle Templates/Python-Dateien – keine weiteren Lücken
+
+## [2.11.0] – 2026-07-27
+
+### Added
+- **Cover in der Player-Vorschau**: Die Startseite zeigt jetzt das Titelbild
+  des laufenden Titels – Spotify-Albumcover, Senderlogos von Radiostreams,
+  Cover lokaler Dateien. Neuer LMS-Cover-Proxy `/api/artwork/current`
+  (`/music/current/cover.jpg` des LMS, funktioniert für alle Quellen)
+- **Thumbnails im Verlauf**: Verlaufseinträge speichern jetzt das Artwork
+  (`play_history` holt es ~3 s nach Abspielstart vom LMS). Startseiten-Vorschau
+  und Verlaufsseite zeigen Mini-Cover, Platzhalter (♪) wenn kein Bild vorliegt.
+  Neuer Proxy `/api/artwork/lms` für LMS-relative Artwork-Pfade
+  (nur `/music/`, `/imageproxy/`, `/html/`, `/plugins/` – kein offener Proxy)
+
+### Changed
+- **Verlauf besser lesbar**: hellere Titel-/Artist-Farben statt durchgehend
+  `text-muted`, dezente Meta-Zeile, farbige Typ-Badges (Spotify grün, URL blau)
+- **Verlauf flackert nicht mehr**: Startseiten-Vorschau und Verlaufsseite
+  rendern nur noch bei Datenänderung neu (JSON-Vergleich); dadurch bleibt auch
+  der Status des „Als Karte speichern"-Buttons erhalten. Altersanzeige wird
+  separat aktualisiert
+- **Verlauf-Buttons**: Klick-Handler übergeben jetzt einen Listen-Index statt
+  JSON im HTML-Attribut (robust gegen Sonderzeichen in Titeln)
+
 ## [2.10.1] – 2026-07-22
 
 ### Fixed
