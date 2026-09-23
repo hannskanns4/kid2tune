@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# kid2tune Installer v2.9.1 for Raspberry Pi Zero 2W
+# kid2tune Installer for Raspberry Pi Zero 2W
 # Installs: Lyrion Music Server, Squeezelite, RFID Controller, I2C LCD,
 #           GPIO Buttons, Flask Web Interface
 # Usage:    sudo bash install.sh
@@ -20,7 +20,6 @@ error() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 step()  { echo -e "\n${CYAN}══════════════════════════════════════════${NC}"; echo -e "${CYAN}  $*${NC}"; echo -e "${CYAN}══════════════════════════════════════════${NC}"; }
 
 # ── Version & Configuration ────────────────────────────────────────────────
-VERSION="2.9.1"
 SWAP_FILE="/var/tmp/install_swap"
 BTN_VOL_UP=19
 BTN_VOL_DOWN=26
@@ -34,6 +33,11 @@ VENV="$APP_DIR/venv"
 PYTHON="$VENV/bin/python"
 PIP="$VENV/bin/pip"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+VERSION_FILE="$SCRIPT_DIR/app/version.txt"
+
+[[ -f "$VERSION_FILE" ]] || error "Version file not found: $VERSION_FILE"
+VERSION="$(tr -d '\r\n' < "$VERSION_FILE")"
+[[ -n "$VERSION" ]] || error "Version file is empty: $VERSION_FILE"
 
 # =============================================================================
 # STEP 0: Prerequisites
