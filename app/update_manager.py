@@ -13,6 +13,7 @@ import hashlib
 import subprocess
 import shutil
 import tempfile
+import threading
 import logging
 
 log = logging.getLogger(__name__)
@@ -21,6 +22,7 @@ DIR = os.path.dirname(os.path.abspath(__file__))
 APP_DIR = "/opt/lms-controller"
 UPDATE_DIR = "/tmp/lms-update"
 REPO_URL_BASE = "https://github.com/hannskanns4/kid2tune.git"
+_UPDATE_LOCK = threading.Lock()
 
 # Runtime data on the boxes that must NOT be overwritten
 PROTECTED_FILES = {
@@ -151,6 +153,22 @@ def check_for_update() -> dict:
 
 
 def pull_and_update() -> tuple:
+    """Runs at most one update at a time and cleans its temporary clone."""
+    if not _UPDATE_LOCK.acquire(blocking=False):
+        message = "An update is already in progress."
+        log.warning(message)
+        return False, message
+    try:
+        result = _pull_and_update()
+        if not result[0] and result[1].startswith("Syntax error in "):
+            log.error(f"Update preflight rejected cloned source: {result[1]}")
+        return result
+    finally:
+        shutil.rmtree(UPDATE_DIR, ignore_errors=True)
+        _UPDATE_LOCK.release()
+
+
+def _pull_and_update() -> tuple:
     """Fetches the latest code from GitHub and updates the local installation.
 
     All files below app/ are copied recursively (not just known categories),

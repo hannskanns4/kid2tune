@@ -14,6 +14,15 @@ Versioning: **X.Y.Z** — X = major, Y = feature, Z = bugfix.
   mit Karten-ID können wiederhergestellt werden. Konflikte erhalten eine
   Vorschau mit Auswahl zum Behalten oder Ersetzen
 
+## [2.13.1] – 2026-10-04
+
+### Fixed
+- **Web-Update blockiert**: Einen falsch zugeordneten `else`-Zweig im RFID-
+  Handler korrigiert. Der Syntaxfehler hatte die Update-Vorabprüfung gestoppt,
+  bevor Dateien installiert werden konnten. Update-Vorabfehler werden jetzt
+  protokolliert; parallele Starts werden abgewiesen und temporäre Clones immer
+  entfernt.
+
 ## [2.12.0] – 2026-07-27
 
 ### Added

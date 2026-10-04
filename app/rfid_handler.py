@@ -228,6 +228,8 @@ def handle_card(uid_hex: str):
                     # Must not run inline: a stalled CIFS mount would block the
                     # scan loop for minutes.
                     _run_bg(sync_manager.push_music_file, local_path)
+                else:
+                    log.error(f"Local file not found: {local_path}")
             elif item_type == "local_album":
                 tracks = sync_manager.pull_music_album(item_id)
                 for index, track_path in enumerate(tracks):
@@ -244,8 +246,6 @@ def handle_card(uid_hex: str):
                         _run_bg(sync_manager.push_music_file, track_path)
                 else:
                     log.error(f"Local album has no playable tracks: {item_id}")
-                else:
-                    log.error(f"Local file not found: {local_path}")
             elif item_type == "sleep":
                 # Toggle sleep timer
                 if is_sleep_timer_active():
