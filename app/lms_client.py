@@ -163,15 +163,10 @@ def volume_down(step: int = 5):
     _player_cmd(["mixer", "volume", f"-{step}"])
 
 
-def get_status() -> dict:
-    """Returns the current playback status."""
-    result = _player_cmd(["status", "-", 1, "tags:acdltuKJ"])
-    pl = result.get("playlist_loop", [{}])
-    track = pl[0] if pl else {}
-    duration = track.get("duration", 0) or 0
-    elapsed = result.get("time", 0) or 0
-    # Artwork: remote streams (Spotify/radio) deliver artwork_url (tag K),
-    # local tracks a coverid (tag c) / artwork_track_id (tag J)
+def _artwork_from_track(track: dict) -> str:
+    """Artwork path/URL from an LMS track dict.
+    Remote streams (Spotify/radio) deliver artwork_url (tag K),
+    local tracks a coverid (tag c) / artwork_track_id (tag J)."""
     artwork = (track.get("artwork_url") or "").strip()
     if not artwork:
         cover_id = track.get("coverid") or track.get("artwork_track_id") or ""
@@ -179,6 +174,17 @@ def get_status() -> dict:
             artwork = f"/music/{cover_id}/cover.jpg"
     if artwork and not artwork.startswith(("http://", "https://", "/")):
         artwork = "/" + artwork
+    return artwork
+
+
+def get_status() -> dict:
+    """Returns the current playback status."""
+    result = _player_cmd(["status", "-", 1, "tags:acdltuKJ"])
+    pl = result.get("playlist_loop", [{}])
+    track = pl[0] if pl else {}
+    duration = track.get("duration", 0) or 0
+    elapsed = result.get("time", 0) or 0
+    artwork = _artwork_from_track(track)
     return {
         "mode":     result.get("mode", "stop"),        # play / pause / stop
         "title":    track.get("title", ""),
@@ -228,6 +234,40 @@ def search(query: str, search_type: str = "tracks") -> list:
     result = _rpc(["", [lms_cmd, 0, 50, "search:" + query]])
     items = result.get(key_map.get(search_type, "titles_loop"), [])
     return items
+
+
+def get_item_artwork(item_type: str, item_id: str) -> str:
+    """Artwork for a library item without playing it.
+    item_type: 'album', 'playlist', 'track' (LMS id) or 'url' (e.g. file://…).
+    Returns an LMS-relative path (/music/…), an absolute URL, or ''."""
+    try:
+        if item_type == "album":
+            result = _rpc(["", ["albums", 0, 1, f"album_id:{item_id}", "tags:j"]])
+            loop = result.get("albums_loop", [])
+            cover_id = loop[0].get("artwork_track_id", "") if loop else ""
+            return f"/music/{cover_id}/cover.jpg" if cover_id else ""
+        if item_type == "playlist":
+            result = _rpc(["", ["playlists", "tracks", 0, 1,
+                                f"playlist_id:{item_id}", "tags:cJK"]])
+            loop = result.get("playlisttracks_loop", [])
+            return _artwork_from_track(loop[0]) if loop else ""
+        if item_type == "track":
+            result = _rpc(["", ["songinfo", 0, 100,
+                                f"track_id:{item_id}", "tags:cJK"]])
+        elif item_type == "url":
+            result = _rpc(["", ["songinfo", 0, 100,
+                                f"url:{item_id}", "tags:cJK"]])
+        else:
+            return ""
+        # songinfo returns a list of single-key dicts
+        merged = {}
+        for d in result.get("songinfo_loop", []):
+            if isinstance(d, dict):
+                merged.update(d)
+        return _artwork_from_track(merged)
+    except Exception as e:
+        log.debug(f"get_item_artwork({item_type}, {item_id}) failed: {e}")
+        return ""
 
 
 def play_item(item_type: str, item_id: str, label: str = ""):
@@ -295,8 +335,10 @@ def is_server_reachable() -> bool:
         import socket as _sock
         s = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
         s.settimeout(2)
-        s.connect(("127.0.0.1", int(port)))
-        s.close()
+        try:
+            s.connect((host, int(port)))
+        finally:
+            s.close()
         return True
     except Exception:
         return False

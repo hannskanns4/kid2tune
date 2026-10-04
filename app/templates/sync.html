@@ -3,6 +3,10 @@
 {% block content %}
 <div class="container mt-4">
 
+  {% if error %}
+  <div class="alert alert-danger">{{ error }}</div>
+  {% endif %}
+
   <!-- Status overview -->
   <div class="card p-4 mb-4">
     <h5>&#128203; {{ t("sync.status_title") }}</h5>
@@ -70,8 +74,8 @@
         <div class="col-md-2">
           <label class="form-label small">{{ t("common.password") }}</label>
           <input type="password" class="form-control" name="password"
-                 value="{{ sync.get('password', '') }}"
-                 placeholder="{{ t('common.password') }}">
+                 value=""
+                 placeholder="{{ t('sync.password_keep') if sync.get('has_password') else t('common.password') }}">
         </div>
         <div class="col-12">
           <button type="submit" class="btn btn-success me-2">{{ t("common.save") }}</button>

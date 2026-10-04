@@ -12,6 +12,7 @@ import os
 import hashlib
 import subprocess
 import shutil
+import tempfile
 import logging
 
 log = logging.getLogger(__name__)
@@ -54,13 +55,35 @@ def file_md5(path: str) -> str:
     return h.hexdigest()
 
 
+import re
+
+# GitHub personal access tokens: ghp_/gho_/ghu_/ghs_/ghr_ or the newer
+# github_pat_ form, plus the legacy 40-char hex tokens.
+_TOKEN_RE = re.compile(r"\A(gh[pousr]_[A-Za-z0-9]{20,255}"
+                       r"|github_pat_[A-Za-z0-9_]{20,255}"
+                       r"|[0-9a-f]{40})\Z")
+
+
+def valid_token(token: str) -> bool:
+    return bool(_TOKEN_RE.match(token or ""))
+
+
 def _get_repo_url() -> str:
-    """Returns the repo URL, with token if configured in config.json."""
+    """Returns the repo URL, with token if configured in config.json.
+
+    The token is validated first: a value such as 'x@evil.tld/repo.git#' would
+    otherwise turn the URL authority into the attacker's host, and the clone
+    result is installed and executed as root.
+    """
     try:
         import config_manager
         cfg = config_manager.read_config()
         token = cfg.get("github_token", "").strip()
         if token:
+            if not valid_token(token):
+                log.error("Configured GitHub token has an invalid format – "
+                          "ignoring it and cloning without authentication.")
+                return REPO_URL_BASE
             # https://<token>@github.com/user/repo.git
             return REPO_URL_BASE.replace("https://", f"https://{token}@")
     except Exception:
@@ -177,27 +200,41 @@ def pull_and_update() -> tuple:
                 except py_compile.PyCompileError as e:
                     return False, f"Syntax error in {rel}: {str(e)[:300]}"
 
-        # 3. Copy ALL files (atomic per file: copy to temp name, then rename)
+        # 3. Copy ALL files (atomic per file: copy to temp name, then rename).
+        # Every replaced file is backed up first so a failure part-way through
+        # cannot leave the box running a mix of old and new code.
+        backup_dir = tempfile.mkdtemp(prefix="lms-update-backup-", dir="/var/tmp")
         copied = []
-        for rel in rel_files:
-            src = os.path.join(src_app, rel)
-            dst = os.path.join(APP_DIR, rel.replace("/", os.sep))
-            os.makedirs(os.path.dirname(dst), exist_ok=True)
-            tmp_dst = dst + ".update-tmp"
-            shutil.copy2(src, tmp_dst)
-            os.replace(tmp_dst, dst)
-            copied.append(rel)
+        try:
+            for rel in rel_files:
+                src = os.path.join(src_app, rel)
+                dst = os.path.join(APP_DIR, rel.replace("/", os.sep))
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                if os.path.exists(dst):
+                    bak = os.path.join(backup_dir, rel.replace("/", os.sep))
+                    os.makedirs(os.path.dirname(bak), exist_ok=True)
+                    shutil.copy2(dst, bak)
+                tmp_dst = dst + ".update-tmp"
+                shutil.copy2(src, tmp_dst)
+                os.replace(tmp_dst, dst)
+                copied.append(rel)
 
-        # 4. Verify: every installed file must match the clone exactly
-        mismatched = []
-        for rel in rel_files:
-            src = os.path.join(src_app, rel)
-            dst = os.path.join(APP_DIR, rel.replace("/", os.sep))
-            if not os.path.exists(dst) or file_md5(src) != file_md5(dst):
-                mismatched.append(rel)
-        if mismatched:
-            return False, ("Verification failed, files differ after copy: "
-                           + ", ".join(mismatched[:10]))
+            # 4. Verify: every installed file must match the clone exactly
+            mismatched = []
+            for rel in rel_files:
+                src = os.path.join(src_app, rel)
+                dst = os.path.join(APP_DIR, rel.replace("/", os.sep))
+                if not os.path.exists(dst) or file_md5(src) != file_md5(dst):
+                    mismatched.append(rel)
+            if mismatched:
+                _restore_backup(backup_dir, copied)
+                return False, ("Verification failed, files differ after copy "
+                               "– old version restored: " + ", ".join(mismatched[:10]))
+        except Exception as e:
+            _restore_backup(backup_dir, copied)
+            return False, f"Update aborted, old version restored: {_sanitize(str(e))}"
+        finally:
+            shutil.rmtree(backup_dir, ignore_errors=True)
 
         # 5. Update version in config.json (without overwriting config.json)
         new_version = old_version
@@ -229,6 +266,23 @@ def pull_and_update() -> tuple:
         if os.path.exists(UPDATE_DIR):
             shutil.rmtree(UPDATE_DIR, ignore_errors=True)
         return False, f"Update failed: {_sanitize(str(e))}"
+
+
+def _restore_backup(backup_dir: str, copied: list):
+    """Rolls the installation back to the files saved before the copy."""
+    restored = 0
+    for rel in copied:
+        bak = os.path.join(backup_dir, rel.replace("/", os.sep))
+        dst = os.path.join(APP_DIR, rel.replace("/", os.sep))
+        if not os.path.exists(bak):
+            continue  # file is new in this version -> nothing to restore
+        try:
+            shutil.copy2(bak, dst + ".restore-tmp")
+            os.replace(dst + ".restore-tmp", dst)
+            restored += 1
+        except Exception as e:
+            log.error(f"Rollback failed for {rel}: {e}")
+    log.warning(f"Update rolled back ({restored} files restored).")
 
 
 def _restart_services():

@@ -96,7 +96,7 @@
 
   <div class="cards-grid mb-4">
     {% for uid, m in mappings.items() %}
-    <div class="print-card" data-value="{{ m.value }}">
+    <div class="print-card" data-value="{{ m.value }}" data-type="{{ m.type or 'url' }}">
       <input type="checkbox" class="pc-check no-print" checked onchange="toggleCard(this)">
       <div class="pc-cover">&#9834;<img alt=""></div>
       <div class="pc-text">
@@ -106,7 +106,7 @@
     </div>
     {% endfor %}
     {% for p in pending %}
-    <div class="print-card" data-value="{{ p.value }}">
+    <div class="print-card" data-value="{{ p.value }}" data-type="{{ p.type or 'url' }}">
       <input type="checkbox" class="pc-check no-print" checked onchange="toggleCard(this)">
       <div class="pc-cover">&#9834;<img alt=""></div>
       <div class="pc-text">
@@ -138,11 +138,13 @@ function artSrc(a){
   return '/api/artwork/lms?path=' + encodeURIComponent(a);
 }
 
-// Resolve artwork per card (Spotify oEmbed / play-history), then show image
+// Resolve artwork per card (Spotify / LMS library / radio / play-history)
 document.querySelectorAll('.print-card').forEach(card => {
   const value = card.dataset.value || '';
   if(!value) return;
-  fetch('/api/artwork/resolve?value=' + encodeURIComponent(value))
+  const type = card.dataset.type || 'url';
+  fetch('/api/artwork/resolve?value=' + encodeURIComponent(value)
+        + '&type=' + encodeURIComponent(type))
     .then(r => r.json())
     .then(d => {
       const src = artSrc(d.artwork);

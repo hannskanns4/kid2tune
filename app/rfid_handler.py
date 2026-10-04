@@ -52,8 +52,8 @@ def uid_to_hex(uid: int) -> str:
 
 # ── Sleep Timer ──────────────────────────────────────────────────────────────
 _sleep_timer = None  # Reference to active timer thread
-_sleep_cancel = threading.Event()
-_sleep_lock = threading.Lock()  # Protects _sleep_timer access
+_sleep_cancel = threading.Event()  # Cancel event of the *current* timer thread
+_sleep_lock = threading.Lock()  # Protects _sleep_timer/_sleep_cancel access
 
 
 def _write_sleep_file(seconds: int):
@@ -64,8 +64,12 @@ def _write_sleep_file(seconds: int):
     os.replace(tmp, SLEEP_TIMER_FILE)
 
 
-def _sleep_timer_thread(minutes: int):
-    """Waits X minutes, then fades volume to 0 over 60s, stops playback."""
+def _sleep_timer_thread(minutes: int, cancel: threading.Event):
+    """Waits X minutes, then fades volume to 0 over 60s, stops playback.
+
+    `cancel` belongs to this thread alone – a timer that was replaced keeps its
+    own event, so a slow predecessor can never be revived by the next start.
+    """
     total = minutes * 60
     fade_duration = 60  # seconds for fade-out
     wait_seconds = max(0, total - fade_duration)
@@ -74,12 +78,12 @@ def _sleep_timer_thread(minutes: int):
 
     # Write countdown for LCD
     remaining = total
-    while remaining > fade_duration and not _sleep_cancel.is_set():
+    while remaining > fade_duration and not cancel.is_set():
         _write_sleep_file(int(remaining))
-        _sleep_cancel.wait(1)
+        cancel.wait(1)
         remaining -= 1
 
-    if _sleep_cancel.is_set():
+    if cancel.is_set():
         _cleanup_sleep()
         return
 
@@ -90,7 +94,7 @@ def _sleep_timer_thread(minutes: int):
         start_vol = 50
     steps = fade_duration
     for i in range(steps):
-        if _sleep_cancel.is_set():
+        if cancel.is_set():
             # On cancel, keep current volume (don't restore old one)
             _cleanup_sleep()
             return
@@ -98,7 +102,7 @@ def _sleep_timer_thread(minutes: int):
         lms_client._player_cmd(["mixer", "volume", str(max(0, vol))])
         remaining -= 1
         _write_sleep_file(max(0, int(remaining)))
-        time.sleep(1)
+        cancel.wait(1)
 
     # Stop and restore volume
     lms_client._player_cmd(["stop"])
@@ -115,25 +119,31 @@ def _cleanup_sleep():
         pass
 
 
-def start_sleep_timer(minutes: int):
+def _cancel_locked():
+    """Cancels a running timer. Caller must already hold _sleep_lock."""
     global _sleep_timer
+    if _sleep_timer and _sleep_timer.is_alive():
+        _sleep_cancel.set()
+        _sleep_timer.join(timeout=3)
+        log.info("Sleep timer cancelled.")
+    _sleep_timer = None
+    _cleanup_sleep()
+
+
+def start_sleep_timer(minutes: int):
+    global _sleep_timer, _sleep_cancel
     with _sleep_lock:
-        cancel_sleep_timer()  # Cancel previous timer
-        _sleep_cancel.clear()
-        _sleep_timer = threading.Thread(target=_sleep_timer_thread, args=(minutes,), daemon=True)
+        _cancel_locked()  # Cancel previous timer
+        _sleep_cancel = threading.Event()  # fresh event, see _sleep_timer_thread
+        _sleep_timer = threading.Thread(target=_sleep_timer_thread,
+                                        args=(minutes, _sleep_cancel), daemon=True)
         _sleep_timer.start()
         log.info(f"Sleep timer started: {minutes} minutes")
 
 
 def cancel_sleep_timer():
-    global _sleep_timer
     with _sleep_lock:
-        if _sleep_timer and _sleep_timer.is_alive():
-            _sleep_cancel.set()
-            _sleep_timer.join(timeout=3)
-            log.info("Sleep timer cancelled.")
-        _sleep_timer = None
-        _cleanup_sleep()
+        _cancel_locked()
 
 
 def is_sleep_timer_active() -> bool:
@@ -141,8 +151,16 @@ def is_sleep_timer_active() -> bool:
         return _sleep_timer is not None and _sleep_timer.is_alive()
 
 
+# Only one NAS lookup at a time: on a hung CIFS mount every call blocks for
+# minutes, and a child tapping an unknown card repeatedly would pile up threads.
+_nas_lookup_busy = threading.Lock()
+
+
 def _async_nas_lookup(uid_hex: str):
     """NAS sync in background – does not block the RFID reader."""
+    if not _nas_lookup_busy.acquire(blocking=False):
+        log.debug("NAS sync already running – skipping.")
+        return
     try:
         ok, _ = sync_manager.pull_mappings()
         if ok:
@@ -151,6 +169,18 @@ def _async_nas_lookup(uid_hex: str):
                 log.info(f"Card {uid_hex} found via NAS sync – please scan again.")
     except Exception as ex:
         log.warning(f"NAS sync failed: {ex}")
+    finally:
+        _nas_lookup_busy.release()
+
+
+def _run_bg(fn, *fn_args):
+    """Runs a slow action off the scan loop, so cards stay responsive."""
+    def _wrapped():
+        try:
+            fn(*fn_args)
+        except Exception as ex:
+            log.warning(f"Background action {getattr(fn, '__name__', fn)} failed: {ex}")
+    threading.Thread(target=_wrapped, daemon=True).start()
 
 
 def handle_card(uid_hex: str):
@@ -194,11 +224,10 @@ def handle_card(uid_hex: str):
                         log.warning(f"Download failed: {result}")
                 if local_path and os.path.isfile(local_path):
                     lms_client.play_item("url", f"file://{local_path}", label=label)
-                    # Push file to NAS in background (in case other boxes need it)
-                    try:
-                        sync_manager.push_music_file(local_path)
-                    except Exception:
-                        pass
+                    # Push file to NAS in background (in case other boxes need it).
+                    # Must not run inline: a stalled CIFS mount would block the
+                    # scan loop for minutes.
+                    _run_bg(sync_manager.push_music_file, local_path)
                 else:
                     log.error(f"Local file not found: {local_path}")
             elif item_type == "sleep":
@@ -223,27 +252,29 @@ def handle_card(uid_hex: str):
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 return
             elif item_type == "multiroom":
-                # Toggle multiroom sync (depends on role)
+                # Toggle multiroom sync (depends on role). Runs in the
+                # background: discovery + join take up to a minute, during
+                # which no card could be scanned or removed.
                 mr_status = multiroom_manager.get_status()
                 if mr_status.get("active"):
                     if mr_status.get("role") == "master":
                         log.info("Multiroom active (master) – deactivating sync...")
-                        multiroom_manager.deactivate_master()
-                        log.info("Multiroom deactivated.")
+                        _run_bg(multiroom_manager.deactivate_master)
                     else:
                         log.info("Multiroom active (slave) – leaving sync...")
-                        multiroom_manager.leave_master()
-                        log.info("Slave mode ended.")
+                        _run_bg(multiroom_manager.leave_master)
                 else:
                     log.info("Activating multiroom sync as master...")
-                    multiroom_manager.activate_master()
-                    log.info("Multiroom activated.")
+                    _run_bg(multiroom_manager.activate_master)
             else:
                 lms_client.play_item(item_type, item_id, label=label)
             # Resume: jump to saved position
             if resume and position > 0 and item_type not in ("bluetooth", "multiroom", "sleep"):
-                # Wait until playback actually started (max 5s)
-                for _wait in range(10):
+                # Wait until playback actually started. Hard deadline: each
+                # get_status() costs two RPCs, so a hung LMS could otherwise
+                # stall the scan loop for a minute.
+                deadline = time.time() + 5
+                while time.time() < deadline:
                     time.sleep(0.5)
                     st = lms_client.get_status()
                     if st.get("mode") == "play":

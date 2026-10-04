@@ -284,7 +284,10 @@
     "music_downloaded": "Musikdatei vom NAS geladen: {src} → {dest}",
     "file_not_on_nas": "Datei nicht auf NAS gefunden: {path}",
     "download_fail": "Musikdatei-Download fehlgeschlagen: {error}",
-    "music_sync_done": "Musik-Sync: {pushed} hochgeladen, {pulled} heruntergeladen, {errors} Fehler"
+    "music_sync_done": "Musik-Sync: {pushed} hochgeladen, {pulled} heruntergeladen, {errors} Fehler",
+    "password_keep": "unverändert lassen",
+    "invalid_share": "Ungültiger Freigabepfad (erwartet //server/freigabe).",
+    "invalid_credentials": "Ungültige Zeichen in Benutzername oder Passwort (kein Komma, kein Zeilenumbruch)."
   },
   "wifi": {
     "status_title": "Verbindungsstatus",
@@ -357,7 +360,11 @@
     "wifi_back": "WLAN wieder da (kurze Unterbrechung).",
     "no_wifi_ap": "Kein WLAN – starte AP-Modus.",
     "manager_started": "WiFi-Manager gestartet.",
-    "loop_error": "Fehler in WiFi-Hauptschleife: {error}"
+    "loop_error": "Fehler in WiFi-Hauptschleife: {error}",
+    "ap_pw_keep": "unverändert lassen",
+    "ssid_invalid": "Ungültige SSID (max. 32 Zeichen, keine Anführungszeichen oder Zeilenumbrüche).",
+    "ap_pw_invalid": "Ungültiges AP-Passwort (8-63 Zeichen, keine Anführungszeichen oder Zeilenumbrüche).",
+    "invalid_values": "Ungültige Werte für Kanal oder Intervall."
   },
   "bluetooth": {
     "not_available": "Bluetooth nicht verfügbar.",

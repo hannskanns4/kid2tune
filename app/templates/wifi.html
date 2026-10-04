@@ -112,7 +112,8 @@
       </div>
       <div class="col-md-3">
         <label class="form-label small">{{ t("wifi.ap_password_label") }}</label>
-        <input type="text" class="form-control" id="ap-password" value="{{ wifi.get('ap_password', '') }}">
+        <input type="password" class="form-control" id="ap-password" value=""
+               placeholder="{{ t('wifi.ap_pw_keep') if wifi.get('has_ap_password') else t('common.password') }}">
       </div>
       <div class="col-md-2">
         <label class="form-label small">{{ t("wifi.channel") }}</label>

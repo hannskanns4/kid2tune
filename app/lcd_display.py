@@ -402,7 +402,8 @@ def main():
                 if shutdown_start == 0:
                     # First detection
                     try:
-                        shutdown_timeout = int(open(SHUTDOWN_PENDING_FILE).read().strip())
+                        with open(SHUTDOWN_PENDING_FILE) as pf:
+                            shutdown_timeout = int(pf.read().strip())
                     except (ValueError, OSError):
                         shutdown_timeout = 15
                     shutdown_start = time.time()
@@ -473,7 +474,8 @@ def main():
             if os.path.exists(STANDBY_PENDING_FILE):
                 if standby_start == 0:
                     try:
-                        standby_timeout = int(open(STANDBY_PENDING_FILE).read().strip())
+                        with open(STANDBY_PENDING_FILE) as pf:
+                            standby_timeout = int(pf.read().strip())
                     except (ValueError, OSError):
                         standby_timeout = 15
                     standby_start = time.time()
@@ -545,7 +547,8 @@ def main():
             # Backlight control via file (manual toggle takes priority)
             if os.path.exists(BACKLIGHT_FILE):
                 try:
-                    val = open(BACKLIGHT_FILE).read().strip()
+                    with open(BACKLIGHT_FILE) as blf:
+                        val = blf.read().strip()
                     want_on = val != "0"
                 except Exception:
                     want_on = True
@@ -634,7 +637,8 @@ def main():
                 sleep_file = "/tmp/lms_sleep_timer"
                 if os.path.exists(sleep_file):
                     try:
-                        secs = int(open(sleep_file).read().strip())
+                        with open(sleep_file) as sf:
+                            secs = int(sf.read().strip())
                         mode_str = f"[ZZZ {secs//60}:{secs%60:02d}]"
                     except Exception:
                         pass

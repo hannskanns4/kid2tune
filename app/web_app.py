@@ -4,10 +4,12 @@ Port: 80
 """
 import json
 import os
+import re
 import sys
 import time
 import logging
 import threading
+from collections import OrderedDict
 from datetime import datetime
 from functools import wraps
 from flask import Flask, render_template, request, jsonify, redirect, url_for, session
@@ -60,6 +62,14 @@ def _ensure_secret_key() -> str:
 
 app.secret_key = _ensure_secret_key()
 
+# Uploads (music files, update packages) are read into memory – without a cap
+# a single large POST is enough to OOM-kill the service on a Pi.
+app.config["MAX_CONTENT_LENGTH"] = 128 * 1024 * 1024
+# Do not send the session cookie on cross-site requests: without it any page
+# opened in the household could act on an unlocked adult session.
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+
 
 @app.context_processor
 def inject_i18n():
@@ -71,8 +81,48 @@ def inject_i18n():
 # PIN hashing lives in security_manager; pin_tool.py resets the PIN via CLI.
 
 ADULT_SESSION_MINUTES = 30
-_pin_fail_count = 0
-_pin_lockout_until = 0.0
+
+# Failed PIN attempts per client IP: {ip: {"fails": int, "until": float}}.
+# Flask runs threaded, so every access is taken under _pin_lock.
+_pin_attempts = {}
+_pin_lock = threading.Lock()
+
+# Routes children may use while the adult area is locked: playback, volume,
+# history, artwork and the unlock dialog itself. Everything not listed here is
+# locked by default — a deny-list would silently expose every new route.
+PUBLIC_ENDPOINTS = {
+    "static",
+    # Pages
+    "index", "dashboard_page", "history_page",
+    # Status
+    "api_status", "api_status_full", "api_version", "api_standby_status",
+    # Playback
+    "api_control", "api_play_url", "api_volume", "api_volume_max_get",
+    "rfid_play", "rfid_pending_play", "lms_search",
+    "api_history", "api_history_play",
+    "api_artwork_current", "api_artwork_lms", "api_artwork_resolve",
+    # Display / wake-up (a locked box must not stay dark)
+    "lcd_backlight_status", "lcd_backlight_set", "api_wake",
+    # Multiroom is a play feature (there are RFID cards for it)
+    "multiroom_status", "multiroom_sync", "multiroom_unsync",
+    "multiroom_unsync_all", "api_discover", "api_discover_known",
+    # Unlock dialog
+    "api_security_status", "api_security_unlock", "api_security_lock",
+}
+
+# Boxes call these on each other and have no browser session, so the PIN can
+# never apply. They are protected by the cluster secret instead (see
+# _cluster_authorized) and are restricted to callers on the local network.
+CLUSTER_ENDPOINTS = {
+    "update_version", "update_package", "update_git",
+    "multiroom_join", "multiroom_leave",
+}
+
+# Locked pages render the PIN dialog; everything else gets a JSON 403.
+PAGE_ENDPOINTS = {
+    "rfid_page", "buttons_page", "sync_page", "wifi_page", "bluetooth_page",
+    "lcd_layout_page", "settings_page", "cards_page",
+}
 
 
 def _adult_locked() -> bool:
@@ -84,10 +134,74 @@ def _adult_locked() -> bool:
     return (time.time() - ts) > ADULT_SESSION_MINUTES * 60
 
 
+def _is_local_caller() -> bool:
+    """True if the request comes from the local network.
+
+    Not a security boundary on its own — it only keeps the box-to-box
+    endpoints from being reachable if the router ever exposes port 80.
+    """
+    import ipaddress
+    try:
+        addr = ipaddress.ip_address(request.remote_addr or "")
+    except ValueError:
+        return False
+    return addr.is_private or addr.is_loopback or addr.is_link_local
+
+
+def _cluster_authorized() -> bool:
+    """Checks the shared secret for box-to-box calls.
+
+    `security.cluster_secret` must be identical on all boxes of a household.
+    As long as it is unset the endpoints stay open (as before) — otherwise an
+    update would lock out boxes that do not know the secret yet.
+    """
+    import secrets as _secrets
+    cfg = load_config()
+    expected = cfg.get("security", {}).get("cluster_secret", "")
+    if not expected:
+        return True
+    supplied = request.headers.get("X-Cluster-Secret", "")
+    return _secrets.compare_digest(supplied, expected)
+
+
+@app.before_request
+def _adult_gate():
+    """Central lock for the adult area (default deny).
+
+    Applied here rather than per route so a newly added route is protected
+    automatically instead of being forgotten.
+    """
+    endpoint = request.endpoint
+    if endpoint is None:
+        return None  # 404 – let Flask handle it
+
+    if endpoint in CLUSTER_ENDPOINTS:
+        if not _is_local_caller():
+            log.warning(f"Box-to-box call from outside the network rejected: "
+                        f"{request.remote_addr} -> {request.path}")
+            return jsonify({"ok": False, "message": "Not allowed."}), 403
+        if not _cluster_authorized():
+            log.warning(f"Box-to-box call with wrong cluster secret: "
+                        f"{request.remote_addr} -> {request.path}")
+            return jsonify({"ok": False, "message": "Invalid cluster secret."}), 403
+        return None
+
+    if endpoint in PUBLIC_ENDPOINTS:
+        return None
+
+    if _adult_locked():
+        if endpoint in PAGE_ENDPOINTS:
+            return render_template("pin.html")
+        return jsonify({"ok": False, "locked": True,
+                        "message": i18n.t("security.locked_msg")}), 403
+    return None
+
+
 def require_adult(f):
-    """Guard for adult-area API routes: 403 if locked.
-    NEVER use on routes that boxes call among each other (e.g.
-    /api/update/git, /api/update/package) — those have no browser session."""
+    """Explicit guard for adult-area routes.
+
+    Redundant with the _adult_gate before_request hook, kept so the protection
+    remains visible at the route and survives a refactor of the allowlist."""
     @wraps(f)
     def wrapper(*args, **kwargs):
         if _adult_locked():
@@ -107,21 +221,38 @@ def api_security_status():
 @app.route("/api/security/unlock", methods=["POST"])
 def api_security_unlock():
     """Verifies the PIN and unlocks the adult area for this session."""
-    global _pin_fail_count, _pin_lockout_until
     import security_manager
-    if time.time() < _pin_lockout_until:
-        wait = int(_pin_lockout_until - time.time()) + 1
-        return jsonify({"ok": False,
-                        "message": i18n.t("security.too_many_attempts", seconds=wait)}), 429
-    pin = (request.json or {}).get("pin", "").strip()
+    client = request.remote_addr or "?"
+
+    with _pin_lock:
+        state = _pin_attempts.get(client)
+        if state and time.time() < state["until"]:
+            wait = int(state["until"] - time.time()) + 1
+            return jsonify({"ok": False,
+                            "message": i18n.t("security.too_many_attempts", seconds=wait)}), 429
+
+    pin = ((request.get_json(silent=True) or {}).get("pin") or "").strip()
     if security_manager.verify_pin(pin):
-        _pin_fail_count = 0
+        with _pin_lock:
+            _pin_attempts.pop(client, None)
         session["adult_unlock_ts"] = time.time()
         return jsonify({"ok": True})
-    _pin_fail_count += 1
-    if _pin_fail_count >= 5:
-        _pin_lockout_until = time.time() + 60
-        _pin_fail_count = 0
+
+    with _pin_lock:
+        # Per client, so one attacker cannot lock the parent out of the box.
+        state = _pin_attempts.setdefault(client, {"fails": 0, "until": 0.0})
+        state["fails"] += 1
+        if state["fails"] >= 3:
+            # Exponential: 30s, 60s, 120s ... capped at one hour. A 4-digit PIN
+            # is no longer exhaustible this way.
+            delay = min(30 * 2 ** (state["fails"] - 3), 3600)
+            state["until"] = time.time() + delay
+        if len(_pin_attempts) > 256:  # no unbounded growth from spoofed sources
+            cutoff = time.time()
+            for ip in [k for k, v in _pin_attempts.items()
+                       if v["until"] < cutoff and k != client][:128]:
+                _pin_attempts.pop(ip, None)
+
     time.sleep(0.5)  # slow down brute force
     return jsonify({"ok": False, "message": i18n.t("security.wrong_pin")}), 401
 
@@ -266,7 +397,7 @@ def api_play_url():
 @app.route("/api/volume", methods=["POST"])
 def api_volume():
     try:
-        val = int((request.json or {}).get("volume", 50))
+        val = int((request.get_json(silent=True) or {}).get("volume", 50))
     except (ValueError, TypeError):
         return jsonify({"error": i18n.t("player.invalid_volume")}), 400
     lms_client.set_volume(val)
@@ -281,8 +412,10 @@ def api_volume_max_get():
 
 @app.route("/api/volume_max", methods=["POST"])
 def api_volume_max_set():
-    val = (request.json or {}).get("volume_max", 100)
-    val = max(10, min(100, int(val)))
+    try:
+        val = max(10, min(100, int((request.get_json(silent=True) or {}).get("volume_max", 100))))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "message": i18n.t("player.invalid_volume")}), 400
     def _update(cfg):
         cfg["volume_max"] = val
     config_manager.update_config(_update)
@@ -634,10 +767,14 @@ def lcd_layout_page():
 
 @app.route("/lcd-layout/save", methods=["POST"])
 def lcd_layout_save():
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     lines = data.get("play_layout", [])
-    if not lines or len(lines) != 4:
+    if not isinstance(lines, list) or len(lines) != 4:
         return jsonify({"ok": False, "message": "4 lines required."}), 400
+    # The LCD daemon renders these strings once per second; a non-string entry
+    # would raise there every tick and flood the journal.
+    if not all(isinstance(l, str) and len(l) <= 80 for l in lines):
+        return jsonify({"ok": False, "message": "Invalid line (text, max 80 characters)."}), 400
     def _update(cfg):
         cfg.setdefault("lcd", {})["play_layout"] = lines
     config_manager.update_config(_update)
@@ -660,14 +797,16 @@ RESERVED_GPIO = {0, 1, 2, 3, 8, 9, 10, 11, 25}
 
 @app.route("/buttons/save", methods=["POST"])
 def buttons_save():
-    cfg = load_config()
     btn_map = {}
     for action in ["vol_up", "vol_down", "next", "prev", "pause", "lcd_backlight"]:
         val = request.form.get(action, "")
-        if val.isdigit() and int(val) not in RESERVED_GPIO:
+        if val.isdigit() and 0 <= int(val) <= 27 and int(val) not in RESERVED_GPIO:
             btn_map[action] = int(val)
-    cfg["buttons"] = btn_map
-    save_config(cfg)
+    # Locked read-modify-write: the WiFi/Bluetooth daemon threads write to the
+    # same file, and a plain read+write would drop one of the two changes.
+    def _update(cfg):
+        cfg["buttons"] = btn_map
+    config_manager.update_config(_update)
     import subprocess
     subprocess.run(["systemctl", "restart", "lms-hardware"],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
@@ -676,19 +815,22 @@ def buttons_save():
 
 _detect_active = False
 _detect_result = None
+_detect_lock = threading.Lock()  # detection thread vs. polling request threads
 
 
 @app.route("/buttons/detect/start", methods=["POST"])
 def buttons_detect_start():
     """Start GPIO button detection mode. Listens on all non-reserved GPIOs."""
     global _detect_active, _detect_result
-    if _detect_active:
-        return jsonify({"ok": False, "message": "Detection already running."})
-    _detect_active = True
-    _detect_result = None
+    with _detect_lock:
+        if _detect_active:
+            return jsonify({"ok": False, "message": "Detection already running."})
+        _detect_active = True
+        _detect_result = None
 
     def _detect():
         global _detect_active, _detect_result
+        scan_pins = []
         try:
             import RPi.GPIO as GPIO
             GPIO.setmode(GPIO.BCM)
@@ -711,32 +853,37 @@ def buttons_detect_start():
                     pass
             # Wait for a NEW button press (HIGH->LOW transition, max 30s)
             for _ in range(300):
-                if not _detect_active:
-                    break
+                with _detect_lock:
+                    if not _detect_active:
+                        break
                 for pin in scan_pins:
                     if pin in initial_low:
                         continue
                     try:
                         if GPIO.input(pin) == GPIO.LOW:
-                            _detect_result = pin
-                            _detect_active = False
-                            for p in scan_pins:
-                                try:
-                                    GPIO.cleanup(p)
-                                except Exception:
-                                    pass
+                            with _detect_lock:
+                                _detect_result = pin
+                                _detect_active = False
                             return
                     except Exception:
                         pass
                 time.sleep(0.1)
-            _detect_active = False
-            for p in scan_pins:
-                try:
-                    GPIO.cleanup(p)
-                except Exception:
-                    pass
-        except Exception:
-            _detect_active = False
+        except Exception as e:
+            log.warning(f"Button detection failed: {e}")
+        finally:
+            # Always release the pins – otherwise they stay configured and
+            # collide with the lms-hardware service.
+            try:
+                import RPi.GPIO as GPIO
+                for p in scan_pins:
+                    try:
+                        GPIO.cleanup(p)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            with _detect_lock:
+                _detect_active = False
 
     threading.Thread(target=_detect, daemon=True).start()
     return jsonify({"ok": True})
@@ -744,17 +891,21 @@ def buttons_detect_start():
 
 @app.route("/buttons/detect/status")
 def buttons_detect_status():
-    """Poll detection result."""
-    if _detect_result is not None:
-        return jsonify({"active": False, "pin": _detect_result})
-    return jsonify({"active": _detect_active, "pin": None})
+    """Poll detection result (consumed once, so a later poll is not stale)."""
+    global _detect_result
+    with _detect_lock:
+        if _detect_result is not None:
+            pin, _detect_result = _detect_result, None
+            return jsonify({"active": False, "pin": pin})
+        return jsonify({"active": _detect_active, "pin": None})
 
 
 @app.route("/buttons/detect/stop", methods=["POST"])
 def buttons_detect_stop():
     """Stop detection mode."""
     global _detect_active
-    _detect_active = False
+    with _detect_lock:
+        _detect_active = False
     return jsonify({"ok": True})
 
 
@@ -762,7 +913,10 @@ def buttons_detect_stop():
 
 @app.route("/sync")
 def sync_page():
-    sync_cfg = sync_manager.get_sync_config()
+    sync_cfg = dict(sync_manager.get_sync_config())
+    # Never send the NAS password to the browser – the template only needs to
+    # know whether one is stored.
+    sync_cfg["has_password"] = bool(sync_cfg.pop("password", ""))
     cfg = load_config()
     mapping_count = len(cfg.get("rfid_mappings", {}))
     pending_count = sync_manager.get_pending_count()
@@ -778,6 +932,27 @@ def sync_save():
     password = request.form.get("password", "")
     box_id = request.form.get("box_id", "").strip()
     enabled = request.form.get("enabled") == "on"
+
+    # Empty field = keep the stored password (it is never sent to the browser)
+    if not password:
+        password = sync_manager.get_sync_config().get("password", "")
+
+    if nas_share and not sync_manager.valid_share(nas_share):
+        return render_template("sync.html",
+                               sync={**sync_manager.get_sync_config(),
+                                     "password": "", "has_password": True,
+                                     "nas_share": nas_share},
+                               mapping_count=len(load_config().get("rfid_mappings", {})),
+                               pending_count=sync_manager.get_pending_count(),
+                               error=i18n.t("sync.invalid_share")), 400
+    if not (sync_manager.valid_credential(username)
+            and sync_manager.valid_credential(password)):
+        return render_template("sync.html",
+                               sync={**sync_manager.get_sync_config(),
+                                     "password": "", "has_password": True},
+                               mapping_count=len(load_config().get("rfid_mappings", {})),
+                               pending_count=sync_manager.get_pending_count(),
+                               error=i18n.t("sync.invalid_credentials")), 400
 
     sync_manager.save_sync_config(nas_share, username, password, box_id, enabled)
     return redirect(url_for("sync_page"))
@@ -816,7 +991,9 @@ def sync_status():
 
 @app.route("/wifi")
 def wifi_page():
-    wifi_cfg = wifi_manager.get_wifi_config()
+    wifi_cfg = dict(wifi_manager.get_wifi_config())
+    # The AP passphrase must not end up in the page source
+    wifi_cfg["has_ap_password"] = bool(wifi_cfg.pop("ap_password", ""))
     status = wifi_manager.get_connection_status()
     known = wifi_manager.get_known_networks()
     return render_template("wifi.html", wifi=wifi_cfg, status=status, known=known)
@@ -870,16 +1047,27 @@ def wifi_ap_stop():
 
 @app.route("/wifi/ap/save", methods=["POST"])
 def wifi_ap_save():
-    data = request.form or request.json or {}
-    ap_ssid = data.get("ap_ssid", "").strip()
-    ap_password = data.get("ap_password", "").strip()
-    ap_channel = int(data.get("ap_channel", 7))
-    check_interval = int(data.get("check_interval", 30))
+    data = request.form or request.get_json(silent=True) or {}
+    ap_ssid = (data.get("ap_ssid") or "").strip()
+    ap_password = (data.get("ap_password") or "").strip()
+    try:
+        ap_channel = max(1, min(13, int(data.get("ap_channel", 7))))
+        check_interval = max(10, min(300, int(data.get("check_interval", 30))))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "message": i18n.t("wifi.invalid_values")}), 400
+
+    # Empty field = keep the stored passphrase (it is not sent to the browser)
+    if not ap_password:
+        ap_password = wifi_manager.get_wifi_config().get("ap_password", "")
 
     if not ap_ssid:
         return jsonify({"ok": False, "message": i18n.t("wifi.ssid_empty")}), 400
+    if not wifi_manager.valid_ssid(ap_ssid):
+        return jsonify({"ok": False, "message": i18n.t("wifi.ssid_invalid")}), 400
     if len(ap_password) < 8:
         return jsonify({"ok": False, "message": i18n.t("wifi.ap_pw_short")}), 400
+    if not wifi_manager.valid_psk(ap_password):
+        return jsonify({"ok": False, "message": i18n.t("wifi.ap_pw_invalid")}), 400
 
     wifi_manager.save_wifi_config(ap_ssid, ap_password, ap_channel, check_interval)
     return jsonify({"ok": True, "message": i18n.t("wifi.ap_saved")})
@@ -973,7 +1161,11 @@ BACKLIGHT_FILE = "/tmp/lcd_backlight"
 @app.route("/lcd/backlight", methods=["GET"])
 def lcd_backlight_status():
     try:
-        val = open(BACKLIGHT_FILE).read().strip() if os.path.exists(BACKLIGHT_FILE) else "1"
+        if os.path.exists(BACKLIGHT_FILE):
+            with open(BACKLIGHT_FILE) as f:
+                val = f.read().strip()
+        else:
+            val = "1"
     except Exception:
         val = "1"
     return jsonify({"on": val != "0"})
@@ -1115,12 +1307,15 @@ def api_discover():
 @app.route("/api/multiroom/join", methods=["POST"])
 def multiroom_join():
     """Called by master: redirect Squeezelite to master LMS."""
-    data = request.json or {}
-    master_ip = data.get("master_ip", "")
+    data = request.get_json(silent=True) or {}
+    master_ip = (data.get("master_ip") or "").strip()
     if not master_ip:
         return jsonify({"ok": False, "message": "master_ip missing."}), 400
+    if not multiroom_manager.valid_ip(master_ip):
+        return jsonify({"ok": False, "message": "Invalid master IP."}), 400
     try:
-        multiroom_manager.join_master(master_ip)
+        if not multiroom_manager.join_master(master_ip):
+            return jsonify({"ok": False, "message": i18n.t("multiroom.join_failed")}), 500
         return jsonify({"ok": True, "message": i18n.t("multiroom.redirected_to", ip=master_ip)})
     except Exception as e:
         return jsonify({"ok": False, "message": str(e)}), 500
@@ -1202,14 +1397,22 @@ def update_package():
                 return jsonify({"ok": False, "message": i18n.t("security.unsafe_path", name=member.name)}), 400
             if member.issym() or member.islnk():
                 return jsonify({"ok": False, "message": i18n.t("security.symlink", name=member.name)}), 400
-            # Ensure extracted path stays within DIR
+            # Ensure extracted path stays within DIR. The separator matters:
+            # without it '/opt/lms-controller-evil' would pass the check.
+            base = os.path.realpath(DIR)
             target = os.path.realpath(os.path.join(DIR, member.name))
-            if not target.startswith(os.path.realpath(DIR)):
+            if target != base and not target.startswith(base + os.sep):
                 return jsonify({"ok": False, "message": i18n.t("security.traversal", name=member.name)}), 400
         # Runtime data (config, history) must never come from a package
         safe_members = [m for m in tar.getmembers()
                         if os.path.basename(m.name) not in update_manager.PROTECTED_FILES]
-        tar.extractall(path=DIR, members=safe_members, filter="data")
+        # filter= was only backported to 3.9.17/3.10.12/3.11.4 – on an older
+        # interpreter it raises TypeError and the update would fail entirely.
+        # The members are already validated above.
+        try:
+            tar.extractall(path=DIR, members=safe_members, filter="data")
+        except TypeError:
+            tar.extractall(path=DIR, members=safe_members)
         tar.close()
         # Restart services (others first, lms-web last since it's our own process)
         subprocess.run(["systemctl", "restart", "lms-rfid", "lms-hardware"],
@@ -1434,20 +1637,74 @@ def api_artwork_lms():
         return "", 404
 
 
-_resolve_cache = {}  # value -> artwork url ("" = resolved, none found)
+# value -> artwork url ("" = resolved, none found). Bounded and lock-protected:
+# the key comes from the request, so an unbounded dict would be a remote
+# memory leak, and Flask serves requests from several threads.
+_resolve_cache = OrderedDict()
+_resolve_cache_lock = threading.Lock()
+_RESOLVE_CACHE_MAX = 512
+
+
+def _tunein_logo(link: str) -> str:
+    """Station logo for a TuneIn link (opml.radiotime.com/Tune.ashx?id=s…)
+    via the public Describe endpoint (no API key)."""
+    import re as _re
+    import requests as _req
+    m = _re.search(r"[?&]id=([sp]\d+)", link)
+    if not m:
+        return ""
+    try:
+        r = _req.get("http://opml.radiotime.com/Describe.ashx",
+                     params={"id": m.group(1), "render": "json"}, timeout=6)
+        if r.status_code == 200:
+            body = r.json().get("body", [])
+            logo = (body[0].get("logo") or "").strip() if body else ""
+            if logo.startswith(("http://", "https://")):
+                return logo
+    except Exception:
+        pass
+    return ""
+
+
+def _radio_browser_favicon(stream_url: str) -> str:
+    """Station logo for a radio stream URL from the community Radio Browser
+    directory (no API key). Mirrors are tried in order; an empty match list
+    from a reachable mirror is authoritative (data is replicated)."""
+    import requests as _req
+    for host in ("de1.api.radio-browser.info", "fi1.api.radio-browser.info"):
+        try:
+            r = _req.get(f"https://{host}/json/stations/byurl",
+                         params={"url": stream_url},
+                         headers={"User-Agent": "kid2tune"}, timeout=6)
+            if r.status_code != 200:
+                continue
+            for st in r.json():
+                fav = (st.get("favicon") or "").strip()
+                if fav.startswith(("http://", "https://")):
+                    return fav
+            return ""
+        except Exception:
+            continue
+    return ""
 
 
 @app.route("/api/artwork/resolve")
 def api_artwork_resolve():
     """Resolves artwork for a mapping value (for card printing etc.).
-    Spotify links via public oEmbed (no API key), otherwise the artwork
-    stored in the play history for the same value."""
+    Spotify links via public oEmbed (no API key), LMS library items
+    (album/playlist/track/local) via the LMS database, radio streams via
+    the Radio Browser directory, otherwise the artwork stored in the play
+    history for the same value."""
     import re as _re
     value = (request.args.get("value") or "").strip()
-    if not value:
+    itype = (request.args.get("type") or "url").strip()
+    if not value or len(value) > 512:
         return jsonify({"artwork": ""})
-    if value in _resolve_cache:
-        return jsonify({"artwork": _resolve_cache[value]})
+    cache_key = f"{itype}:{value}"
+    with _resolve_cache_lock:
+        if cache_key in _resolve_cache:
+            _resolve_cache.move_to_end(cache_key)
+            return jsonify({"artwork": _resolve_cache[cache_key]})
 
     artwork = ""
     # 1. Spotify: spotify:album:ID / open.spotify.com links -> oEmbed thumbnail
@@ -1467,7 +1724,29 @@ def api_artwork_resolve():
         except Exception:
             pass
 
-    # 2. Fallback: artwork captured in the play history
+    # URLs are URLs regardless of the stored type (play_item coerces the
+    # same way), so a radio card mislabeled as e.g. 'track' still resolves.
+    is_url = value.startswith(("http://", "https://"))
+
+    # 2. Radio: TuneIn links via Describe, other streams via Radio Browser
+    if not artwork and not url and is_url:
+        if "radiotime.com" in value or "tunein.com" in value:
+            artwork = _tunein_logo(value)
+        else:
+            artwork = _radio_browser_favicon(value)
+
+    # 3. LMS library items (album/playlist/track ids, local files)
+    if not artwork and not is_url and itype in ("album", "playlist", "track"):
+        artwork = lms_client.get_item_artwork(itype, value)
+    if not artwork and itype == "local":
+        try:
+            local_path = sync_manager.safe_music_path(value)
+            if local_path:
+                artwork = lms_client.get_item_artwork("url", f"file://{local_path}")
+        except Exception:
+            pass
+
+    # 4. Fallback: artwork captured in the play history
     if not artwork:
         try:
             for e in play_history.get_history():
@@ -1477,7 +1756,10 @@ def api_artwork_resolve():
         except Exception:
             pass
 
-    _resolve_cache[value] = artwork
+    with _resolve_cache_lock:
+        _resolve_cache[cache_key] = artwork
+        while len(_resolve_cache) > _RESOLVE_CACHE_MAX:
+            _resolve_cache.popitem(last=False)
     return jsonify({"artwork": artwork})
 
 
@@ -1626,9 +1908,12 @@ def shutdown_config_get():
 
 @app.route("/api/shutdown/config", methods=["POST"])
 def shutdown_config_set():
-    data = request.json or {}
-    hold_time = max(2, min(15, int(data.get("hold_time", 5))))
-    confirm_timeout = max(5, min(60, int(data.get("confirm_timeout", 15))))
+    data = request.get_json(silent=True) or {}
+    try:
+        hold_time = max(2, min(15, int(data.get("hold_time", 5))))
+        confirm_timeout = max(5, min(60, int(data.get("confirm_timeout", 15))))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "message": i18n.t("settings.invalid_values")}), 400
     def _update(cfg):
         cfg["shutdown"] = {
             "hold_time": hold_time,
@@ -1701,13 +1986,25 @@ def settings_page():
 @app.route("/api/settings", methods=["POST"])
 @require_adult
 def api_settings():
-    data = request.json or {}
-    def _update(cfg):
-        cfg["auto_standby_minutes"] = max(0, min(480, int(data.get("auto_standby_minutes", 30))))
-        cfg["display_off_minutes"] = max(1, min(480, int(data.get("display_off_minutes", 30))))
-        cfg["shutdown"] = {
+    data = request.get_json(silent=True) or {}
+    try:
+        # Converted before the config lock is taken: a TypeError inside the
+        # updater would abort the write half-way.
+        values = {
+            "auto_standby_minutes": max(0, min(480, int(data.get("auto_standby_minutes", 30)))),
+            "display_off_minutes": max(1, min(480, int(data.get("display_off_minutes", 30)))),
             "hold_time": max(2, min(15, int(data.get("hold_time", 5)))),
             "confirm_timeout": max(5, min(60, int(data.get("confirm_timeout", 15)))),
+        }
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "message": i18n.t("settings.invalid_values")}), 400
+
+    def _update(cfg):
+        cfg["auto_standby_minutes"] = values["auto_standby_minutes"]
+        cfg["display_off_minutes"] = values["display_off_minutes"]
+        cfg["shutdown"] = {
+            "hold_time": values["hold_time"],
+            "confirm_timeout": values["confirm_timeout"],
         }
     config_manager.update_config(_update)
     return jsonify({"ok": True})
@@ -1864,10 +2161,36 @@ def alarms_page():
 
 @app.route("/alarms/save", methods=["POST"])
 def alarms_save():
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     alarms = data.get("alarms", [])
+    if not isinstance(alarms, list) or len(alarms) > 50:
+        return jsonify({"ok": False, "message": "Invalid alarm list."}), 400
+
+    # Validated here because _alarm_check_loop runs on this data every minute;
+    # a wrong type would kill that thread and silently disable all alarms.
+    clean = []
+    for a in alarms:
+        if not isinstance(a, dict):
+            return jsonify({"ok": False, "message": "Invalid alarm."}), 400
+        if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", str(a.get("time", ""))):
+            return jsonify({"ok": False, "message": "Invalid time (HH:MM)."}), 400
+        days = a.get("days", [1, 2, 3, 4, 5, 6, 7])
+        if not isinstance(days, list) or not all(isinstance(d, int) and 1 <= d <= 7 for d in days):
+            return jsonify({"ok": False, "message": "Invalid weekdays."}), 400
+        try:
+            volume = max(0, min(100, int(a.get("volume", 30))))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "message": "Invalid volume."}), 400
+        clean.append({
+            "time": str(a.get("time")),
+            "days": days,
+            "volume": volume,
+            "enabled": bool(a.get("enabled", True)),
+            "rfid_uid": str(a.get("rfid_uid", "")),
+        })
+
     def _update(cfg):
-        cfg["alarms"] = alarms
+        cfg["alarms"] = clean
     config_manager.update_config(_update)
     return jsonify({"ok": True})
 
@@ -1879,32 +2202,40 @@ def _wifi_daemon_loop():
     """WiFi manager daemon loop (runs as thread in lms-web)."""
     time.sleep(15)  # Wait until wpa_supplicant is ready
     while True:
+        # Everything inside the try: an exception while reading the config
+        # would kill the thread, and WiFi reconnect/AP fallback would stay
+        # dead until the next reboot.
+        interval = 30
         try:
+            cfg = load_config()
+            interval = int(cfg.get("wifi", {}).get("check_interval", 30))
             if os.path.exists(STANDBY_PAUSE_FILE):
                 time.sleep(5)
                 continue
             wifi_manager.daemon_tick()
         except Exception as e:
             logging.getLogger("WEB").error(f"WiFi thread error: {e}")
-        cfg = load_config()
-        interval = cfg.get("wifi", {}).get("check_interval", 30)
-        time.sleep(interval)
+        time.sleep(max(5, interval))
 
 
 def _bluetooth_daemon_loop():
     """Bluetooth manager daemon loop (runs as thread in lms-web)."""
-    bluetooth_manager.ensure_adapter_powered()
+    try:
+        bluetooth_manager.ensure_adapter_powered()
+    except Exception as e:
+        logging.getLogger("WEB").error(f"Bluetooth init error: {e}")
     while True:
+        interval = 15
         try:
+            cfg = load_config()
+            interval = int(cfg.get("bluetooth", {}).get("check_interval", 15))
             if os.path.exists(STANDBY_PAUSE_FILE):
                 time.sleep(5)
                 continue
             bluetooth_manager.daemon_tick()
         except Exception as e:
             logging.getLogger("WEB").error(f"Bluetooth thread error: {e}")
-        cfg = load_config()
-        interval = cfg.get("bluetooth", {}).get("check_interval", 15)
-        time.sleep(interval)
+        time.sleep(max(5, interval))
 
 
 if __name__ == "__main__":

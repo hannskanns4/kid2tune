@@ -13,8 +13,10 @@ Concept:
 """
 import json
 import os
+import re
 import subprocess
 import logging
+import tempfile
 from datetime import datetime, timezone
 from typing import Tuple
 
@@ -44,6 +46,19 @@ def safe_music_path(item_id: str):
     base = os.path.realpath(MUSIC_DIR)
     candidate = os.path.realpath(os.path.join(base, item_id))
     if candidate == base or candidate.startswith(base + os.sep):
+        return candidate
+    return None
+
+
+def _safe_under(base: str, rel_path: str):
+    """Like safe_music_path(), but for any base directory (e.g. the NAS mount).
+
+    Returns the absolute path, or None if rel_path would escape base."""
+    if not rel_path:
+        return None
+    base_real = os.path.realpath(base)
+    candidate = os.path.realpath(os.path.join(base_real, rel_path))
+    if candidate == base_real or candidate.startswith(base_real + os.sep):
         return candidate
     return None
 
@@ -97,6 +112,17 @@ def save_sync_config(nas_share: str, username: str, password: str,
 
 # ── NAS Mount ───────────────────────────────────────────────────────────────
 
+def valid_share(nas_share: str) -> bool:
+    """//server/share – no comma (CIFS option separator), no newline, no dash
+    at the start (would be parsed as an option by mount)."""
+    return bool(re.fullmatch(r"//[A-Za-z0-9._-]+/[^,\n\r]{1,255}", nas_share or ""))
+
+
+def valid_credential(value: str) -> bool:
+    """A comma in user/password injects arbitrary CIFS mount options."""
+    return not re.search(r"[,\n\r\x00]", value or "")
+
+
 def _mount_share() -> Tuple[bool, str]:
     sync_cfg = get_sync_config()
     if not sync_cfg.get("enabled") or not sync_cfg.get("nas_share"):
@@ -106,6 +132,11 @@ def _mount_share() -> Tuple[bool, str]:
     nas_share = sync_cfg.get("nas_share", "")
     username = sync_cfg.get("username", "")
     password = sync_cfg.get("password", "")
+
+    if not valid_share(nas_share):
+        return False, "Invalid share path (expected //server/share)."
+    if not (valid_credential(username) and valid_credential(password)):
+        return False, "Invalid characters in user name or password."
 
     os.makedirs(mount_point, exist_ok=True)
 
@@ -122,29 +153,45 @@ def _mount_share() -> Tuple[bool, str]:
 
     # Mount SMB share (vers=3.0 -> 2.0 -> 1.0 fallback)
     base_opts = "iocharset=utf8,file_mode=0666,dir_mode=0777"
-    if username:
-        cred_opts = f"username={username},password={password}"
-    else:
-        cred_opts = "guest"
+    cred_file = None
+    last_err = "Mount failed."
+    try:
+        if username:
+            # Credentials via 0600 file, never on the command line: /proc/*/cmdline
+            # is world-readable, so `ps` would show the NAS password.
+            cred_dir = "/run" if os.path.isdir("/run") else None
+            fd, cred_file = tempfile.mkstemp(prefix="lms-cifs-", dir=cred_dir)
+            with os.fdopen(fd, "w") as f:
+                f.write(f"username={username}\npassword={password}\n")
+            os.chmod(cred_file, 0o600)
+            cred_opts = f"credentials={cred_file}"
+        else:
+            cred_opts = "guest"
 
-    # Try different SMB versions (newest first)
-    for vers in ["3.0", "2.0", "1.0"]:
-        mount_opts = f"{cred_opts},{base_opts},vers={vers}"
+        # Try different SMB versions (newest first)
+        for vers in ["3.0", "2.0", "1.0"]:
+            mount_opts = f"{cred_opts},{base_opts},vers={vers}"
 
-        try:
-            result = subprocess.run(
-                ["mount", "-t", "cifs", nas_share, mount_point, "-o", mount_opts],
-                capture_output=True, text=True, timeout=15,
-            )
-            if result.returncode == 0:
-                log.info(f"NAS mounted: {nas_share} -> {mount_point} (SMB {vers})")
-                return True, ""
-            last_err = result.stderr.strip() or "Mount failed."
-            log.warning(f"Mount with SMB {vers} failed: {last_err}")
-        except subprocess.TimeoutExpired:
-            return False, "Timeout during mount – is the NAS reachable?"
-        except Exception as e:
-            last_err = str(e)
+            try:
+                result = subprocess.run(
+                    ["mount", "-t", "cifs", "--", nas_share, mount_point, "-o", mount_opts],
+                    capture_output=True, text=True, timeout=15,
+                )
+                if result.returncode == 0:
+                    log.info(f"NAS mounted: {nas_share} -> {mount_point} (SMB {vers})")
+                    return True, ""
+                last_err = result.stderr.strip() or "Mount failed."
+                log.warning(f"Mount with SMB {vers} failed: {last_err}")
+            except subprocess.TimeoutExpired:
+                return False, "Timeout during mount – is the NAS reachable?"
+            except Exception as e:
+                last_err = str(e)
+    finally:
+        if cred_file:
+            try:
+                os.unlink(cred_file)
+            except OSError:
+                pass
 
     log.error(f"Mount failed with all SMB versions: {last_err}")
     return False, last_err
@@ -519,6 +566,13 @@ def get_sync_status() -> dict:
 
 def push_music_file(local_path: str) -> Tuple[bool, str]:
     """Copies a local music file to the NAS (if not already present)."""
+    # Containment first: local_path comes from an RFID mapping value, which the
+    # web UI accepts freely – without this, '../../etc/shadow' would be copied
+    # off the box onto the NAS.
+    local_path = safe_music_path(os.path.relpath(local_path, MUSIC_DIR)
+                                 if os.path.isabs(local_path) else local_path)
+    if local_path is None:
+        return False, "Unsafe path (outside the music directory)."
     if not os.path.isfile(local_path):
         return False, f"File not found: {local_path}"
 
@@ -535,8 +589,10 @@ def push_music_file(local_path: str) -> Tuple[bool, str]:
     os.makedirs(nas_music, exist_ok=True)
 
     # Preserve relative path from MUSIC_DIR (including subdirectories)
-    rel_path = os.path.relpath(local_path, MUSIC_DIR)
-    dest = os.path.join(nas_music, rel_path)
+    rel_path = os.path.relpath(local_path, os.path.realpath(MUSIC_DIR))
+    dest = _safe_under(nas_music, rel_path)
+    if dest is None:
+        return False, f"Unsafe target path on the NAS: {rel_path}"
     os.makedirs(os.path.dirname(dest), exist_ok=True)
 
     import shutil
@@ -555,7 +611,10 @@ def push_music_file(local_path: str) -> Tuple[bool, str]:
 
 def pull_music_file(rel_path: str) -> Tuple[bool, str]:
     """Downloads a music file from the NAS to the local MUSIC_DIR."""
-    local_path = os.path.join(MUSIC_DIR, rel_path)
+    # The NAS is not trusted either: rel_path decides where root writes.
+    local_path = safe_music_path(rel_path)
+    if local_path is None:
+        return False, "Unsafe path (outside the music directory)."
     if os.path.isfile(local_path):
         return True, local_path  # Already present locally
 
@@ -568,9 +627,9 @@ def pull_music_file(rel_path: str) -> Tuple[bool, str]:
         return False, f"NAS not reachable: {err}"
 
     mount_point = sync_cfg.get("mount_point", "/mnt/lms-sync")
-    nas_file = os.path.join(mount_point, NAS_MUSIC_DIR, rel_path)
+    nas_file = _safe_under(os.path.join(mount_point, NAS_MUSIC_DIR), rel_path)
 
-    if not os.path.isfile(nas_file):
+    if nas_file is None or not os.path.isfile(nas_file):
         return False, f"File not found on NAS: {rel_path}"
 
     os.makedirs(os.path.dirname(local_path), exist_ok=True)
@@ -598,7 +657,11 @@ def sync_all_music() -> Tuple[bool, str]:
         rel_path = entry.get("value", "")
         if not rel_path:
             continue
-        local_path = os.path.join(MUSIC_DIR, rel_path)
+        local_path = safe_music_path(rel_path)
+        if local_path is None:
+            log.error(f"Skipping unsafe path in mapping {uid}: {rel_path}")
+            errors += 1
+            continue
 
         if os.path.isfile(local_path):
             # File present locally -> push to NAS

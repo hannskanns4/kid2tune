@@ -6,6 +6,7 @@ When scanning a master card:
 2. Synchronize all players in LMS
 3. Scan again -> reset all back to localhost
 """
+import ipaddress
 import json
 import os
 import socket
@@ -220,27 +221,74 @@ def deactivate_master():
 PID_FILE = "/tmp/squeezelite_multiroom.pid"
 
 
+# Handle of the squeezelite we started ourselves. Kept so the child can be
+# reaped – signalling by PID alone leaves a zombie per join in the long-lived
+# web process.
+_manual_proc = None
+
+
+def valid_ip(addr: str) -> bool:
+    """Only local network addresses: master_ip determines which server the box
+    plays from, so it must not point anywhere on the internet."""
+    try:
+        ip = ipaddress.ip_address((addr or "").strip())
+    except ValueError:
+        return False
+    return ip.is_private or ip.is_loopback or ip.is_link_local
+
+
 def _kill_manual_squeezelite():
     """Terminates a manually started squeezelite using the saved PID."""
-    if os.path.exists(PID_FILE):
+    global _manual_proc
+    if _manual_proc is not None:
+        try:
+            _manual_proc.terminate()
+            try:
+                _manual_proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                _manual_proc.kill()
+                _manual_proc.wait(timeout=3)
+        except Exception as e:
+            log.warning(f"Terminating squeezelite failed: {e}")
+        _manual_proc = None
+    elif os.path.exists(PID_FILE):
+        # Fallback after a web-process restart: no handle any more, only the PID
         try:
             pid = int(open(PID_FILE).read().strip())
-            os.kill(pid, 15)  # SIGTERM
-            time.sleep(1)
-            try:
-                os.kill(pid, 9)  # SIGKILL if still running
-            except ProcessLookupError:
-                pass
+            # PIDs <= 1 would signal init or every process in the group;
+            # the file lives in /tmp and is not trustworthy.
+            if pid > 1 and _is_squeezelite(pid):
+                os.kill(pid, 15)  # SIGTERM
+                time.sleep(1)
+                try:
+                    os.kill(pid, 9)  # SIGKILL if still running
+                except ProcessLookupError:
+                    pass
         except (ValueError, ProcessLookupError, OSError):
             pass
-        try:
-            os.remove(PID_FILE)
-        except OSError:
-            pass
+
+    try:
+        os.remove(PID_FILE)
+    except OSError:
+        pass
+
+
+def _is_squeezelite(pid: int) -> bool:
+    """Guards against a manipulated PID file pointing at a foreign process."""
+    try:
+        with open(f"/proc/{pid}/comm") as f:
+            return f.read().strip() == "squeezelite"
+    except OSError:
+        return False
 
 
 def join_master(master_ip: str):
     """Called on slave boxes: redirect squeezelite to master."""
+    global _manual_proc
+    if not valid_ip(master_ip):
+        log.error(f"Rejected invalid master IP: {master_ip!r}")
+        return False
+
     hostname = socket.gethostname()
     log.info(f"Redirecting squeezelite to master {master_ip}...")
 
@@ -248,16 +296,26 @@ def join_master(master_ip: str):
     _kill_manual_squeezelite()
 
     # Stop systemd service
-    subprocess.run(["systemctl", "stop", "squeezelite"],
-                   capture_output=True, timeout=10)
+    try:
+        subprocess.run(["systemctl", "stop", "squeezelite"],
+                       capture_output=True, timeout=10)
+    except subprocess.TimeoutExpired:
+        log.warning("systemctl stop squeezelite timed out – continuing.")
     time.sleep(1)
 
     # Start squeezelite manually with master IP
-    proc = subprocess.Popen(
-        ["/usr/bin/squeezelite", "-n", hostname, "-s", master_ip, "-o", "default",
-         "-b", "512:1024"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    )
+    try:
+        proc = subprocess.Popen(
+            ["/usr/bin/squeezelite", "-n", hostname, "-s", master_ip, "-o", "default",
+             "-b", "512:1024"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+    except OSError as e:
+        log.error(f"Could not start squeezelite: {e}")
+        subprocess.run(["systemctl", "start", "squeezelite"],
+                       capture_output=True, timeout=10)
+        return False
+    _manual_proc = proc
 
     # Save PID for clean shutdown
     with open(PID_FILE, "w") as f:
@@ -265,6 +323,15 @@ def join_master(master_ip: str):
 
     # Wait until squeezelite has registered with the master LMS
     time.sleep(3)
+
+    if proc.poll() is not None:
+        # Died immediately (e.g. audio device busy) – without this check the
+        # box would stay silent and still report itself as a slave.
+        log.error(f"squeezelite exited immediately (code {proc.returncode}).")
+        _manual_proc = None
+        subprocess.run(["systemctl", "start", "squeezelite"],
+                       capture_output=True, timeout=10)
+        return False
 
     # Save state (atomically)
     _write_state({

@@ -284,7 +284,10 @@
     "music_downloaded": "Music file loaded from NAS: {src} → {dest}",
     "file_not_on_nas": "File not found on NAS: {path}",
     "download_fail": "Music file download failed: {error}",
-    "music_sync_done": "Music sync: {pushed} uploaded, {pulled} downloaded, {errors} errors"
+    "music_sync_done": "Music sync: {pushed} uploaded, {pulled} downloaded, {errors} errors",
+    "password_keep": "leave unchanged",
+    "invalid_share": "Invalid share path (expected //server/share).",
+    "invalid_credentials": "Invalid characters in user name or password (no comma, no line break)."
   },
   "wifi": {
     "status_title": "Connection status",
@@ -357,7 +360,11 @@
     "wifi_back": "WiFi back (brief interruption).",
     "no_wifi_ap": "No WiFi – starting AP mode.",
     "manager_started": "WiFi manager started.",
-    "loop_error": "Error in WiFi main loop: {error}"
+    "loop_error": "Error in WiFi main loop: {error}",
+    "ap_pw_keep": "leave unchanged",
+    "ssid_invalid": "Invalid SSID (max 32 characters, no quotes or line breaks).",
+    "ap_pw_invalid": "Invalid AP password (8-63 characters, no quotes or line breaks).",
+    "invalid_values": "Invalid values for channel or interval."
   },
   "bluetooth": {
     "not_available": "Bluetooth not available.",

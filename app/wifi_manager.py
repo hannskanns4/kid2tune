@@ -53,14 +53,16 @@ def get_wifi_config() -> dict:
 
 def save_wifi_config(ap_ssid: str, ap_password: str, ap_channel: int = 7,
                      check_interval: int = 30):
-    cfg = _load_config()
-    cfg["wifi"] = {
-        "ap_ssid": ap_ssid,
-        "ap_password": ap_password,
-        "ap_channel": ap_channel,
-        "check_interval": check_interval,
-    }
-    _save_config(cfg)
+    # Read-modify-write in one locked step, otherwise a concurrent write from
+    # the WiFi/Bluetooth daemon threads silently drops the change.
+    def _update(cfg):
+        cfg["wifi"] = {
+            "ap_ssid": ap_ssid,
+            "ap_password": ap_password,
+            "ap_channel": ap_channel,
+            "check_interval": check_interval,
+        }
+    config_manager.update_config(_update)
 
 
 # ── WiFi Scan ────────────────────────────────────────────────────────────────
@@ -143,14 +145,40 @@ def get_known_networks() -> List[dict]:
     return networks
 
 
+def valid_ssid(ssid: str) -> bool:
+    """SSID for a quoted wpa_supplicant value: max 32 bytes, and none of the
+    characters that would end the string and inject further directives."""
+    if not ssid or len(ssid.encode("utf-8")) > 32:
+        return False
+    return not re.search(r'["\\\n\r\x00]', ssid)
+
+
+def valid_psk(password: str) -> bool:
+    """WPA passphrase: 8-63 characters, same quoting restrictions as the SSID."""
+    if not password:
+        return True  # open network
+    if not 8 <= len(password) <= 63:
+        return False
+    return not re.search(r'["\\\n\r\x00]', password)
+
+
 def add_network(ssid: str, password: str = "") -> Tuple[bool, str]:
     """Adds a WiFi network."""
     if not ssid:
         return False, "SSID must not be empty."
+    # wpa_supplicant.conf is parsed by a root daemon and supports directives
+    # such as pkcs11_module_path – an unescaped quote plus newline in the SSID
+    # or passphrase would let anyone inject them.
+    if not valid_ssid(ssid):
+        return False, "Invalid SSID (max 32 characters, no quotes or line breaks)."
+    if not valid_psk(password):
+        return False, "Invalid WiFi password (8-63 characters, no quotes or line breaks)."
 
     # Ensure wpa_supplicant.conf header exists
     if not os.path.exists(WPA_CONF):
-        with open(WPA_CONF, "w") as f:
+        # Contains PSKs in plain text -> never world-readable
+        fd = os.open(WPA_CONF, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
             f.write("ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev\n")
             f.write("update_config=1\n")
             f.write(f"country=DE\n\n")
@@ -202,10 +230,14 @@ def remove_network(ssid: str) -> Tuple[bool, str]:
 def reconfigure_wpa() -> bool:
     """Reload wpa_supplicant."""
     try:
-        subprocess.run(["wpa_cli", "-i", IFACE, "reconfigure"],
-                       capture_output=True, timeout=10)
+        result = subprocess.run(["wpa_cli", "-i", IFACE, "reconfigure"],
+                                capture_output=True, text=True, timeout=10)
+        if result.returncode != 0:
+            log.warning(f"wpa_cli reconfigure failed: {result.stderr.strip()}")
+            return False
         return True
-    except Exception:
+    except Exception as e:
+        log.warning(f"wpa_cli reconfigure failed: {e}")
         return False
 
 
@@ -386,6 +418,14 @@ def is_ap_active() -> bool:
 
 def connect_to_network(ssid: str, password: str = "") -> Tuple[bool, str]:
     """Connects to a specific WiFi network via NetworkManager."""
+    # Validate up front: on the nmcli path the values are separate argv
+    # elements and harmless, but the wpa_supplicant fallback below writes
+    # them into a config file parsed by a root daemon.
+    if not valid_ssid(ssid):
+        return False, "Invalid SSID (max 32 characters, no quotes or line breaks)."
+    if not valid_psk(password):
+        return False, "Invalid WiFi password (8-63 characters, no quotes or line breaks)."
+
     # If AP is active, stop it first
     if is_ap_active():
         stop_ap()

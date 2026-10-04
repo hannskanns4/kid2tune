@@ -74,8 +74,15 @@ def enter_standby() -> tuple:
         except Exception as e:
             log.warning(f"Stopping service {svc} failed: {e}")
 
-    # 4. Flush pending writes
-    subprocess.run(["sync"], capture_output=True, timeout=5)
+    # 4. Flush pending writes. Generous timeout and never fatal: aborting the
+    # flush right before the power is pulled defeats the whole purpose of
+    # standby, and an exception here would leave the box half-stopped.
+    try:
+        subprocess.run(["sync"], capture_output=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        log.warning("sync did not finish within 60s – continuing anyway.")
+    except Exception as e:
+        log.warning(f"sync failed: {e}")
     time.sleep(1)
 
     # 5. Remount filesystem read-only
@@ -115,15 +122,27 @@ def wake_up() -> tuple:
 
     log.info("Waking up from deep standby...")
 
-    # 1. Remount filesystem read-write
+    # 1. Remount filesystem read-write. If this fails the box stays read-only
+    # and every later config write fails silently – so report it honestly
+    # instead of claiming the box is awake.
+    rw_err = ""
     try:
-        subprocess.run(
+        result = subprocess.run(
             ["mount", "-o", "remount,rw", "/"],
-            capture_output=True, timeout=10,
+            capture_output=True, text=True, timeout=10,
         )
-        log.info("Filesystem mounted read-write.")
+        if result.returncode == 0:
+            log.info("Filesystem mounted read-write.")
+        else:
+            rw_err = result.stderr.strip() or "remount failed"
+            log.error(f"Read-write remount failed: {rw_err}")
     except Exception as e:
-        log.warning(f"Read-write remount failed: {e}")
+        rw_err = str(e)
+        log.error(f"Read-write remount failed: {e}")
+
+    if rw_err:
+        return False, (f"Box could not be woken: filesystem is still read-only "
+                       f"({rw_err}). A reboot fixes this.")
 
     # 2. Remove standby flag
     try:
