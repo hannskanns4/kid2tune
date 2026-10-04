@@ -118,10 +118,8 @@ def check_for_update() -> dict:
                 current = f.read().strip()
 
         remote_version = ""
-        tmp = UPDATE_DIR + "-check"
+        tmp = tempfile.mkdtemp(prefix="lms-update-check-")
         try:
-            if os.path.exists(tmp):
-                shutil.rmtree(tmp)
             result = subprocess.run(
                 ["git", "clone", "--depth", "1", _get_repo_url(), tmp],
                 capture_output=True, text=True, timeout=60,
