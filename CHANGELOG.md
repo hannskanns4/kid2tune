@@ -3,6 +3,17 @@
 All notable changes to this project are documented here.
 Versioning: **X.Y.Z** — X = major, Y = feature, Z = bugfix.
 
+## [2.13.0] – 2026-10-04
+
+### Added
+- **RFID-Express-Zuweisung**: Vormerkungen und noch nicht zugewiesene lokale
+  Audiodateien können der Reihe nach durch Auflegen leerer Karten zugewiesen
+  werden; nach jeder Karte springt die Warteschlange automatisch weiter
+- **RFID-CSV-Import und Backup**: Leere Vorlage und Backup der Karten samt
+  Karten-IDs herunterladen; Links ohne Karten-ID werden vorgemerkt, Zuordnungen
+  mit Karten-ID können wiederhergestellt werden. Konflikte erhalten eine
+  Vorschau mit Auswahl zum Behalten oder Ersetzen
+
 ## [2.12.0] – 2026-07-27
 
 ### Added

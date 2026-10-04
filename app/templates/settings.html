@@ -114,6 +114,16 @@
     </p>
   </div>
 
+  <div class="card p-4 mb-4">
+    <h5>{{ t("settings.player_title") }}</h5>
+    <div class="d-flex gap-2 flex-wrap align-items-center">
+      <button class="btn btn-outline-primary" onclick="restartPlayer()" id="btn-player-restart">
+        &#8635; {{ t("settings.player_restart") }}
+      </button>
+      <span id="player-restart-status" class="text-muted small" aria-live="polite"></span>
+    </div>
+  </div>
+
   <!-- Update -->
   <div class="card p-4 mb-4">
     <h5>&#128259; {{ t("settings.update_title") }}</h5>
@@ -198,6 +208,7 @@ const MSG_LMS_WORKING   = {{ t("lms.plugins_working")|tojson }};
 const MSG_LMS_RESTART_CONFIRM = {{ t("lms.confirm_restart")|tojson }};
 const MSG_LMS_RESTARTING = {{ t("lms.restarting")|tojson }};
 const MSG_LMS_RESTART   = {{ t("lms.restart")|tojson }};
+const MSG_PLAYER_RESTARTING = {{ t("settings.player_restarting")|tojson }};
 
 // Update hostname preview live
 document.getElementById('hostname').addEventListener('input', function(){
@@ -262,6 +273,26 @@ function saveTimings(){
     if(d.ok) alert(MSG_SETTINGS_SAVED);
     else alert(MSG_ERROR + ': ' + d.message);
   });
+}
+
+function restartPlayer(){
+  const btn = document.getElementById('btn-player-restart');
+  const status = document.getElementById('player-restart-status');
+  btn.disabled = true;
+  status.className = 'text-muted small';
+  status.textContent = MSG_PLAYER_RESTARTING;
+  fetch('/api/player/restart', {method:'POST'})
+    .then(async r => ({response:r, data:await r.json()}))
+    .then(({response, data}) => {
+      status.textContent = data.message || (data.ok ? 'OK' : MSG_ERROR);
+      status.className = (response.ok && data.ok ? 'text-success' : 'text-danger') + ' small';
+      btn.disabled = false;
+    })
+    .catch(e => {
+      status.textContent = MSG_ERROR + ': ' + e;
+      status.className = 'text-danger small';
+      btn.disabled = false;
+    });
 }
 
 // Display IP address

@@ -177,7 +177,7 @@ STATUS_CACHE_TTL = 10  # seconds
 
 
 def get_system_status(cols: int) -> str:
-    """Checks LMS, Spotify, Buttons, RFID, WiFi and returns a status line.
+    """Checks LMS, Spotify, Player, RFID, WiFi and returns a status line.
     Result is cached for 10s to reduce load."""
     import subprocess as _sp
     global _status_cache, _status_cache_time
@@ -202,13 +202,11 @@ def get_system_status(cols: int) -> str:
     except Exception:
         parts.append("S:--")
 
-    # Button service (lms-hardware now includes buttons)
+    # Local Squeezelite player registered with LMS
     try:
-        r = _sp.run(["systemctl", "is-active", "lms-hardware"],
-                     capture_output=True, text=True, timeout=3)
-        parts.append("B:" + ("OK" if r.stdout.strip() == "active" else "--"))
+        parts.append("P:" + ("OK" if lms_client.is_local_player_registered() else "--"))
     except Exception:
-        parts.append("B:--")
+        parts.append("P:--")
 
     # RFID service
     try:

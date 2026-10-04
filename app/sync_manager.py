@@ -31,6 +31,7 @@ PENDING_PATH = os.path.join(DIR, "sync_pending.json")
 SHARED_FILE = "rfid_sync_v2.json"
 MUSIC_DIR = "/home/music"
 NAS_MUSIC_DIR = "music"  # Subdirectory in the NAS mount
+MUSIC_EXTENSIONS = {".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".wma"}
 
 
 # ── Helper Functions ────────────────────────────────────────────────────────
@@ -48,6 +49,71 @@ def safe_music_path(item_id: str):
     if candidate == base or candidate.startswith(base + os.sep):
         return candidate
     return None
+
+
+def music_album_files(album_id: str) -> list:
+    """Returns sorted audio files in a safe, immediate album directory."""
+    album_path = safe_music_path(album_id)
+    if album_path is None or not os.path.isdir(album_path):
+        return []
+    base = os.path.realpath(MUSIC_DIR)
+    tracks = []
+    for root, _, filenames in os.walk(album_path, followlinks=False):
+        for filename in filenames:
+            path = os.path.join(root, filename)
+            real_path = os.path.realpath(path)
+            if (os.path.splitext(filename)[1].lower() in MUSIC_EXTENSIONS
+                    and real_path.startswith(base + os.sep)
+                    and os.path.isfile(real_path)):
+                tracks.append(real_path)
+    return sorted(tracks, key=lambda path: os.path.relpath(path, album_path).lower())
+
+
+def list_music_albums() -> list:
+    """Lists first-level album folders with their playable track counts."""
+    os.makedirs(MUSIC_DIR, exist_ok=True)
+    albums = []
+    for name in sorted(os.listdir(MUSIC_DIR), key=str.lower):
+        path = safe_music_path(name)
+        if path and os.path.isdir(path):
+            tracks = music_album_files(name)
+            if tracks:
+                albums.append({"name": name, "value": name, "tracks": len(tracks)})
+    return albums
+
+
+def pull_music_album(album_id: str) -> list:
+    """Downloads an album directory from NAS and returns its local tracks."""
+    if safe_music_path(album_id) is None:
+        return []
+    sync_cfg = get_sync_config()
+    if not sync_cfg.get("enabled"):
+        return music_album_files(album_id)
+    ok, _ = _mount_share()
+    if not ok:
+        return music_album_files(album_id)
+
+    mount_point = sync_cfg.get("mount_point", "/mnt/lms-sync")
+    nas_music = os.path.join(mount_point, NAS_MUSIC_DIR)
+    nas_album = _safe_under(nas_music, album_id)
+    if nas_album and os.path.isdir(nas_album):
+        import shutil
+        for root, _, filenames in os.walk(nas_album, followlinks=False):
+            for filename in filenames:
+                if os.path.splitext(filename)[1].lower() not in MUSIC_EXTENSIONS:
+                    continue
+                source = os.path.join(root, filename)
+                rel_path = os.path.relpath(source, nas_music)
+                destination = safe_music_path(rel_path)
+                if destination is None or not os.path.isfile(source):
+                    continue
+                if not os.path.isfile(destination):
+                    os.makedirs(os.path.dirname(destination), exist_ok=True)
+                    try:
+                        shutil.copy2(source, destination)
+                    except OSError as exc:
+                        log.warning("Album track download failed for %s: %s", rel_path, exc)
+    return music_album_files(album_id)
 
 
 def _safe_under(base: str, rel_path: str):
@@ -652,7 +718,8 @@ def sync_all_music() -> Tuple[bool, str]:
     errors = 0
 
     for uid, entry in mappings.items():
-        if entry.get("type") != "local" or entry.get("deleted"):
+        item_type = entry.get("type")
+        if item_type not in ("local", "local_album") or entry.get("deleted"):
             continue
         rel_path = entry.get("value", "")
         if not rel_path:
@@ -663,7 +730,18 @@ def sync_all_music() -> Tuple[bool, str]:
             errors += 1
             continue
 
-        if os.path.isfile(local_path):
+        if item_type == "local_album":
+            tracks = pull_music_album(rel_path)
+            if not tracks:
+                errors += 1
+                continue
+            for track_path in tracks:
+                ok, _ = push_music_file(track_path)
+                if ok:
+                    pushed += 1
+                else:
+                    errors += 1
+        elif os.path.isfile(local_path):
             # File present locally -> push to NAS
             ok, _ = push_music_file(local_path)
             if ok:

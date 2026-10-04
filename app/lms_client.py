@@ -60,6 +60,13 @@ def _get_player_id() -> str:
     return pid
 
 
+def is_local_player_registered() -> bool:
+    """True when LMS lists the Squeezelite player running on this host."""
+    hostname = socket.gethostname().lower()
+    players = _rpc(["", ["players", 0, 50]]).get("players_loop", [])
+    return any(p.get("name", "").lower() == hostname for p in players)
+
+
 def invalidate_player_cache():
     """Reset cache (e.g. after multiroom switch)."""
     global _cached_player_id, _player_id_time
@@ -296,6 +303,24 @@ def play_item(item_type: str, item_id: str, label: str = ""):
     try:
         import play_history
         play_history.record_play(item_type, item_id, label)
+    except Exception as e:
+        log.debug(f"play_history record failed: {e}")
+
+
+def play_local_album(file_paths: list, album_id: str, label: str = ""):
+    """Replaces the current queue with local files and starts the album."""
+    pid = _get_player_id()
+    if not pid or not file_paths:
+        return
+    from urllib.parse import quote
+    _rpc([pid, ["playlist", "clear"]])
+    for path in file_paths:
+        url = "file://" + quote(os.path.abspath(path), safe="/:\\")
+        _rpc([pid, ["playlist", "add", url]])
+    _rpc([pid, ["play"]])
+    try:
+        import play_history
+        play_history.record_play("local_album", album_id, label)
     except Exception as e:
         log.debug(f"play_history record failed: {e}")
 

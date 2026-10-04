@@ -7,6 +7,8 @@ Raspberry Pi-based RFID music box for kids — place a card, play a tune. Contro
 ## Features
 
 - **RFID card control** (RC522) — place a card to play music (tracks, albums, playlists, Spotify, URLs, local files)
+- **Express RFID assignment** — assign queued links and unassigned local audio to cards one after another
+- **RFID CSV import/export** — download an empty template, import links, and back up or restore assignments with card IDs
 - **LCD display** (20x4 I2C) — customizable layout for playback, idle status, system info
 - **LCD Play Layout Editor** — design the 4 LCD lines during playback via web UI with variable blocks
 - **GPIO buttons** — play/pause, next/prev, volume up/down, LCD backlight
@@ -163,14 +165,15 @@ LCD         <--  lcd_display    <--  lms_client (status polling)
 | Path          | Page            | Function                                    |
 |---------------|-----------------|---------------------------------------------|
 | `/`           | Player          | Playback control, volume, progress, multiroom |
-| `/rfid`       | RFID            | Scan, assign and manage cards               |
+| `/rfid`       | RFID            | Scan, assign, manage, and bulk-assign cards; CSV import and backup |
+| `/local-music`| Local Music     | Upload and manage local album folders       |
 | `/alarms`     | Alarms          | Configure scheduled playback                |
 | `/sync`       | NAS Sync        | SMB share configuration, push/pull          |
 | `/wifi`       | WiFi            | Connect to networks, configure AP mode      |
 | `/bluetooth`  | Bluetooth       | Pair devices, switch audio output           |
 | `/buttons`    | Buttons         | GPIO pin assignment + auto-detect mode      |
 | `/lcd-layout` | LCD             | Customize LCD play mode layout              |
-| `/settings`   | Settings        | Hostname, timing, standby, language, updates |
+| `/settings`   | Settings        | Hostname, timing, standby, language, updates, player restart |
 
 ### RFID card types
 
@@ -181,10 +184,35 @@ LCD         <--  lcd_display    <--  lms_client (status polling)
 | `playlist`   | Play a playlist                             |
 | `url`        | Play URL/stream/Spotify link                |
 | `local`      | Play a local music file                     |
+| `local_album`| Play a local album folder                   |
 | `bluetooth`  | Switch audio to BT device                   |
 | `multiroom`  | Activate/deactivate multi-room sync         |
 | `sleep`      | Start/stop sleep timer                      |
 | `shutdown`   | Safely shut down the box                    |
+
+### RFID CSV and express assignment
+
+On the **RFID** page, download the empty CSV template or export a backup of
+current card assignments and pre-saved entries. The CSV columns are:
+
+```csv
+card_id,link,description,type,resume
+,https://example.com/audiobook,My audiobook,url,0
+04A1B2C3,https://example.com/song,My song,url,1
+```
+
+Leave `card_id` empty to add the link to the pre-saved queue. Include a card ID
+to restore an assignment to that card. Existing card IDs are shown in an import
+preview; each conflict can either keep the existing assignment or replace it.
+The importer accepts comma- or semicolon-separated CSV files. The `type` and
+`resume` columns are optional; the type defaults to `url`.
+
+To assign several items in sequence, start **Express assignment** on the RFID
+page and place a new, unassigned card on the reader for each item shown. The
+queue processes pre-saved entries first, followed by local audio files that are
+not already assigned to a card. After each successful scan it advances to the
+next item. Uploaded local album folders are available from **Local Music** and
+can also be assigned as `local_album` cards.
 
 ## Usage
 
@@ -212,11 +240,11 @@ Hold time (default: 5s) and confirmation timeout (default: 15s) are configurable
 Line 1: Date + time
 Line 2: Hostname / IP (alternating every 5s)
 Line 3: Online / Update available / Local
-Line 4: L:OK S:OK B:OK R:OK W:OK
+Line 4: L:OK S:OK P:OK R:OK W:OK
 ```
 
 - **Line 3** shows `Online` when connected, `Update available` when a new version is on GitHub (checked every 30 min), or `Local` when offline
-- **Line 4** status indicators: **L** = LMS | **S** = Spotify | **B** = Buttons | **R** = RFID | **W** = WiFi
+- **Line 4** status indicators: **L** = LMS | **S** = Spotify | **P** = Squeezelite player | **R** = RFID | **W** = WiFi
 
 #### Play mode (customizable)
 Default layout:

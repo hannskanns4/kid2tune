@@ -3,16 +3,19 @@ web_app.py – Flask web interface for kid2tune
 Port: 80
 """
 import json
+import csv
+import io
 import os
 import re
 import sys
 import time
 import logging
 import threading
+import uuid
 from collections import OrderedDict
 from datetime import datetime
 from functools import wraps
-from flask import Flask, render_template, request, jsonify, redirect, url_for, session
+from flask import Flask, render_template, request, jsonify, redirect, url_for, session, send_file
 
 logging.basicConfig(
     level=logging.INFO,
@@ -121,7 +124,7 @@ CLUSTER_ENDPOINTS = {
 # Locked pages render the PIN dialog; everything else gets a JSON 403.
 PAGE_ENDPOINTS = {
     "rfid_page", "buttons_page", "sync_page", "wifi_page", "bluetooth_page",
-    "lcd_layout_page", "settings_page", "cards_page",
+    "lcd_layout_page", "settings_page", "cards_page", "local_music_page",
 }
 
 
@@ -424,12 +427,427 @@ def api_volume_max_set():
 
 # ── RFID Management ─────────────────────────────────────────────────────────
 
+RFID_CSV_COLUMNS = ("card_id", "link", "description", "type", "resume")
+RFID_MAPPING_TYPES = {
+    "track", "album", "playlist", "url", "local", "local_album",
+    "bluetooth", "multiroom", "sleep", "shutdown",
+}
+
+
+def _normalize_rfid_uid(value):
+    uid = re.sub(r"[\s:-]", "", str(value or "")).upper()
+    return uid if re.fullmatch(r"(?:[0-9A-F]{2}){4,20}", uid) else ""
+
+
+def _validate_rfid_csv_rows(rows):
+    if not isinstance(rows, list) or not rows or len(rows) > 10000:
+        raise ValueError("empty_or_large")
+    validated = []
+    seen_uids = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("invalid_row")
+        card_id = _normalize_rfid_uid(row.get("card_id", ""))
+        if row.get("card_id") and not card_id:
+            raise ValueError("invalid_uid")
+        if card_id and card_id in seen_uids:
+            raise ValueError("duplicate_uid")
+        if card_id:
+            seen_uids.add(card_id)
+        value = str(row.get("link", "") or "").strip()
+        if not value:
+            raise ValueError("missing_link")
+        item_type = str(row.get("type", "url") or "url").strip().lower()
+        if item_type not in RFID_MAPPING_TYPES:
+            raise ValueError("invalid_type")
+        label = str(row.get("description", "") or "").strip() or value
+        resume = str(row.get("resume", "") or "").strip().lower() in {"1", "true", "yes", "ja", "on"}
+        spotify = re.match(
+            r"https?://open\.spotify\.com/(?:intl-[a-z]+/)?(track|album|playlist|artist)/([a-zA-Z0-9]+)",
+            value,
+        )
+        if spotify:
+            value = f"spotify:{spotify.group(1)}:{spotify.group(2)}"
+            item_type = "url"
+        validated.append({
+            "card_id": card_id,
+            "link": value,
+            "description": label,
+            "type": item_type,
+            "resume": resume,
+        })
+    return validated
+
+
+def _parse_rfid_csv(text):
+    try:
+        dialect = csv.Sniffer().sniff(text[:8192], delimiters=",;\t")
+    except csv.Error:
+        dialect = csv.excel
+    reader = csv.DictReader(io.StringIO(text), dialect=dialect)
+    headers = {str(name or "").strip().lower(): name for name in (reader.fieldnames or [])}
+
+    def find_header(*names):
+        return next((headers[name] for name in names if name in headers), None)
+
+    link_key = find_header("link", "url", "value", "inhalt")
+    if not link_key:
+        raise ValueError("missing_header")
+    card_key = find_header("card_id", "uid", "karten_id", "karten-id")
+    description_key = find_header("description", "beschreibung", "comment", "kommentar", "label")
+    type_key = find_header("type", "typ")
+    resume_key = find_header("resume", "position_merken")
+    rows = []
+    for raw in reader:
+        if not any(str(value or "").strip() for value in raw.values()):
+            continue
+        rows.append({
+            "card_id": raw.get(card_key, "") if card_key else "",
+            "link": raw.get(link_key, ""),
+            "description": raw.get(description_key, "") if description_key else "",
+            "type": raw.get(type_key, "url") if type_key else "url",
+            "resume": raw.get(resume_key, "") if resume_key else "",
+        })
+    return _validate_rfid_csv_rows(rows)
+
+
+def _rfid_express_queue(cfg=None):
+    cfg = cfg or load_config()
+    pending = cfg.get("pending_mappings", [])
+    mappings = cfg.get("rfid_mappings", {})
+    queue = []
+    reserved_files = set()
+    reserved_albums = []
+
+    for index, entry in enumerate(pending):
+        pending_id = str(entry.get("id") or f"pending-{index}")
+        queue.append({
+            "key": f"pending:{pending_id}",
+            "pending_id": pending_id,
+            "label": entry.get("label", entry.get("value", "")),
+            "type": entry.get("type", "url"),
+            "value": entry.get("value", ""),
+            "resume": bool(entry.get("resume", False)),
+        })
+
+    for entry in list(mappings.values()) + list(pending):
+        value = entry.get("value", "")
+        item_type = entry.get("type", "url")
+        safe_path = sync_manager.safe_music_path(value) if item_type in ("local", "local_album") else None
+        if safe_path is None:
+            continue
+        real_path = os.path.realpath(safe_path)
+        if item_type == "local":
+            reserved_files.add(real_path)
+        else:
+            reserved_albums.append(real_path)
+
+    music_root = os.path.realpath(sync_manager.MUSIC_DIR)
+    if os.path.isdir(music_root):
+        for root, directories, filenames in os.walk(music_root, followlinks=False):
+            directories[:] = [name for name in directories if not os.path.islink(os.path.join(root, name))]
+            for filename in filenames:
+                path = os.path.join(root, filename)
+                if os.path.splitext(filename)[1].lower() not in sync_manager.MUSIC_EXTENSIONS:
+                    continue
+                real_path = os.path.realpath(path)
+                try:
+                    if os.path.commonpath((music_root, real_path)) != music_root:
+                        continue
+                except ValueError:
+                    continue
+                if real_path in reserved_files or any(
+                    real_path.startswith(album + os.sep) for album in reserved_albums
+                ):
+                    continue
+                relative = os.path.relpath(real_path, music_root).replace(os.sep, "/")
+                queue.append({
+                    "key": f"file:{relative}",
+                    "pending_id": "",
+                    "label": os.path.splitext(os.path.basename(filename))[0],
+                    "type": "local",
+                    "value": relative,
+                    "resume": False,
+                })
+    return queue
+
+
+def _render_rfid_page(**extra):
+    cfg = load_config()
+    context = {
+        "mappings": cfg.get("rfid_mappings", {}),
+        "pending": cfg.get("pending_mappings", []),
+        "albums": sync_manager.list_music_albums(),
+        "express_queue": _rfid_express_queue(cfg),
+        "csv_error": request.args.get("csv_error", ""),
+        "csv_imported": request.args.get("csv_imported", ""),
+        "csv_skipped": request.args.get("csv_skipped", ""),
+    }
+    context.update(extra)
+    return render_template("rfid.html", **context)
+
+
 @app.route("/rfid")
 def rfid_page():
+    return _render_rfid_page()
+
+
+@app.route("/rfid/csv/template")
+def rfid_csv_template():
+    output = io.StringIO(newline="")
+    csv.writer(output).writerow(RFID_CSV_COLUMNS)
+    return send_file(
+        io.BytesIO(output.getvalue().encode("utf-8")),
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name="rfid-vorlage.csv",
+    )
+
+
+@app.route("/rfid/csv/export")
+def rfid_csv_export():
     cfg = load_config()
-    mappings = cfg.get("rfid_mappings", {})
-    pending = cfg.get("pending_mappings", [])
-    return render_template("rfid.html", mappings=mappings, pending=pending)
+    output = io.StringIO(newline="")
+    writer = csv.DictWriter(output, fieldnames=RFID_CSV_COLUMNS)
+    writer.writeheader()
+    for card_id, entry in sorted(cfg.get("rfid_mappings", {}).items()):
+        writer.writerow({
+            "card_id": card_id,
+            "link": entry.get("value", ""),
+            "description": entry.get("label", ""),
+            "type": entry.get("type", "url"),
+            "resume": "1" if entry.get("resume") else "0",
+        })
+    for entry in cfg.get("pending_mappings", []):
+        writer.writerow({
+            "link": entry.get("value", ""),
+            "description": entry.get("label", ""),
+            "type": entry.get("type", "url"),
+            "resume": "1" if entry.get("resume") else "0",
+        })
+    return send_file(
+        io.BytesIO(output.getvalue().encode("utf-8-sig")),
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name="rfid-backup.csv",
+    )
+
+
+@app.route("/rfid/csv/import", methods=["POST"])
+def rfid_csv_import():
+    if request.form.get("confirm") == "1":
+        try:
+            rows = _validate_rfid_csv_rows(json.loads(request.form.get("rows", "")))
+        except (ValueError, TypeError, json.JSONDecodeError):
+            return redirect(url_for("rfid_page", csv_error="1"))
+        decisions = [request.form.get(f"conflict_{index}", "keep") for index in range(len(rows))]
+        imported, skipped = _apply_rfid_csv(rows, decisions)
+        return redirect(url_for("rfid_page", csv_imported=imported, csv_skipped=skipped))
+
+    upload = request.files.get("csv_file")
+    if upload is None or not upload.filename:
+        return redirect(url_for("rfid_page", csv_error="1"))
+    try:
+        content = upload.read()
+        try:
+            text = content.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = content.decode("cp1252")
+        rows = _parse_rfid_csv(text)
+    except (UnicodeDecodeError, csv.Error, ValueError):
+        return redirect(url_for("rfid_page", csv_error="1"))
+
+    mappings = load_config().get("rfid_mappings", {})
+    for row in rows:
+        row["conflict"] = bool(row["card_id"] and row["card_id"] in mappings)
+    return _render_rfid_page(
+        import_preview=rows,
+        import_rows=json.dumps([
+            {key: row[key] for key in RFID_CSV_COLUMNS} for row in rows
+        ], ensure_ascii=False),
+    )
+
+
+def _apply_rfid_csv(rows, decisions):
+    from datetime import timezone
+    now = datetime.now(timezone.utc).isoformat()
+    imported = 0
+    skipped = 0
+    changed_mappings = []
+
+    def _update(cfg):
+        nonlocal imported, skipped
+        mappings = cfg.setdefault("rfid_mappings", {})
+        pending = cfg.setdefault("pending_mappings", [])
+        box_id = cfg.get("sync", {}).get("box_id", "unknown")
+        for index, row in enumerate(rows):
+            card_id = row["card_id"]
+            if card_id:
+                if card_id in mappings and (index >= len(decisions) or decisions[index] != "replace"):
+                    skipped += 1
+                    continue
+                entry = {
+                    "label": row["description"],
+                    "type": row["type"],
+                    "value": row["link"],
+                    "resume": row["resume"],
+                    "position": 0,
+                    "updated_at": now,
+                    "updated_by": box_id,
+                }
+                mappings[card_id] = entry
+                changed_mappings.append((card_id, entry))
+            else:
+                if any(
+                    entry.get("type", "url") == row["type"]
+                    and entry.get("value") == row["link"]
+                    for entry in pending
+                ):
+                    skipped += 1
+                    continue
+                pending.append({
+                    "id": uuid.uuid4().hex[:8],
+                    "label": row["description"],
+                    "type": row["type"],
+                    "value": row["link"],
+                    "resume": row["resume"],
+                    "created_at": now,
+                })
+            imported += 1
+
+    config_manager.update_config(_update)
+    for card_id, entry in changed_mappings:
+        sync_manager.queue_change("upsert", card_id, entry)
+    if changed_mappings:
+        try:
+            sync_manager.push_mappings()
+        except Exception:
+            pass
+    return imported, skipped
+
+
+@app.route("/api/rfid/express/queue")
+def rfid_express_queue():
+    return jsonify({"items": _rfid_express_queue()})
+
+
+@app.route("/api/rfid/express/assign", methods=["POST"])
+def rfid_express_assign():
+    data = request.get_json(silent=True) or {}
+    uid = _normalize_rfid_uid(data.get("uid", ""))
+    item_key = str(data.get("item_key", ""))
+    if not uid:
+        return jsonify({"ok": False, "message": i18n.t("rfid.express_invalid_card")}), 400
+    try:
+        with open(LAST_RFID_FILE) as source:
+            scanned_uid = source.read().strip().upper()
+    except OSError:
+        scanned_uid = ""
+    if scanned_uid != uid:
+        return jsonify({"ok": False, "message": i18n.t("rfid.express_card_missing")}), 409
+
+    from datetime import timezone
+    now = datetime.now(timezone.utc).isoformat()
+    result = {"entry": None, "error": "stale"}
+
+    def _update(cfg):
+        mappings = cfg.setdefault("rfid_mappings", {})
+        if uid in mappings:
+            result["error"] = "assigned"
+            return
+        item = next((item for item in _rfid_express_queue(cfg) if item["key"] == item_key), None)
+        if item is None:
+            return
+        if item.get("pending_id"):
+            pending = cfg.get("pending_mappings", [])
+            if not any(entry.get("id") == item["pending_id"] for entry in pending):
+                return
+            cfg["pending_mappings"] = [
+                entry for entry in pending if entry.get("id") != item["pending_id"]
+            ]
+        entry = {
+            "label": item["label"],
+            "type": item["type"],
+            "value": item["value"],
+            "resume": item["resume"],
+            "position": 0,
+            "updated_at": now,
+            "updated_by": cfg.get("sync", {}).get("box_id", "unknown"),
+        }
+        mappings[uid] = entry
+        result["entry"] = entry
+        result["error"] = ""
+
+    config_manager.update_config(_update)
+    if result["entry"] is None:
+        message = i18n.t("rfid.express_card_assigned") if result["error"] == "assigned" else i18n.t("rfid.express_stale")
+        try:
+            with open(LAST_RFID_FILE) as source:
+                if source.read().strip().upper() == uid:
+                    os.remove(LAST_RFID_FILE)
+        except OSError:
+            pass
+        return jsonify({"ok": False, "message": message,
+                        "items": _rfid_express_queue()}), 409
+
+    try:
+        with open(LAST_RFID_FILE) as source:
+            if source.read().strip().upper() == uid:
+                os.remove(LAST_RFID_FILE)
+    except OSError:
+        pass
+    sync_manager.queue_change("upsert", uid, result["entry"])
+    try:
+        sync_manager.push_mappings()
+    except Exception:
+        pass
+    return jsonify({
+        "ok": True,
+        "assigned": {"uid": uid, **result["entry"]},
+        "items": _rfid_express_queue(),
+    })
+
+
+@app.route("/local-music")
+def local_music_page():
+    return render_template("local_music.html",
+                           albums=sync_manager.list_music_albums(),
+                           message=request.args.get("message", ""))
+
+
+@app.route("/local-music/upload", methods=["POST"])
+def local_music_upload():
+    from werkzeug.utils import secure_filename
+
+    album_name = secure_filename(request.form.get("album", "").strip())
+    uploads = request.files.getlist("music_files")
+    allowed_extensions = {".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".wma"}
+    files = []
+    for upload in uploads:
+        if not upload.filename:
+            continue
+        filename = secure_filename(upload.filename.replace("\\", "/").rsplit("/", 1)[-1])
+        if not filename or os.path.splitext(filename)[1].lower() not in allowed_extensions:
+            return redirect(url_for("local_music_page", message=i18n.t("local_music.invalid_file")))
+        files.append((filename, upload))
+
+    if not album_name or not files:
+        return redirect(url_for("local_music_page", message=i18n.t("local_music.album_required")))
+    if len({filename.lower() for filename, _ in files}) != len(files):
+        return redirect(url_for("local_music_page", message=i18n.t("local_music.duplicate_files")))
+
+    album_path = sync_manager.safe_music_path(album_name)
+    if album_path is None or os.path.exists(album_path):
+        return redirect(url_for("local_music_page", message=i18n.t("local_music.album_exists")))
+    os.makedirs(album_path, exist_ok=False)
+    for filename, upload in files:
+        upload.save(os.path.join(album_path, filename))
+    for filename, _ in files:
+        try:
+            sync_manager.push_music_file(os.path.join(album_path, filename))
+        except Exception:
+            pass
+    return redirect(url_for("local_music_page", message=i18n.t("local_music.uploaded")))
 
 
 @app.route("/rfid/scan")
@@ -452,6 +870,12 @@ def rfid_assign():
     label = data.get("label", uid)
     itype = data.get("type", "url")
     value = data.get("value", "").strip()
+
+    if itype == "local_album":
+        value = data.get("album_value", "").strip()
+        album_path = sync_manager.safe_music_path(value)
+        if not value or album_path is None or not os.path.isdir(album_path):
+            return redirect(url_for("rfid_page"))
 
     # File upload for type "local"
     uploaded_file = request.files.get("music_file")
@@ -601,6 +1025,24 @@ def _play_mapping(entry, fallback_label=""):
                 sync_manager.push_music_file(local_path)
             except Exception:
                 pass
+            return {"ok": True, "message": i18n.t("rfid.playing", label=label)}, 200
+        elif item_type == "local_album":
+            tracks = sync_manager.pull_music_album(item_id)
+            for index, track_path in enumerate(tracks):
+                if not os.path.isfile(track_path):
+                    rel_path = os.path.relpath(track_path, sync_manager.MUSIC_DIR)
+                    ok, result = sync_manager.pull_music_file(rel_path)
+                    if not ok:
+                        return {"ok": False, "message": i18n.t("rfid.file_not_found", error=result)}, 404
+                    tracks[index] = result
+            if not tracks:
+                return {"ok": False, "message": i18n.t("rfid.file_not_found", error=item_id)}, 404
+            lms_client.play_local_album(tracks, item_id, label=label)
+            for track_path in tracks:
+                try:
+                    sync_manager.push_music_file(track_path)
+                except Exception:
+                    pass
             return {"ok": True, "message": i18n.t("rfid.playing", label=label)}, 200
         elif item_type == "sleep":
             try:
@@ -1800,6 +2242,25 @@ def api_lms_restart():
     if ok:
         return jsonify({"ok": True, "message": i18n.t("lms.restart_started")})
     return jsonify({"ok": False, "message": info or "LMS service not found"}), 500
+
+
+@app.route("/api/player/restart", methods=["POST"])
+def api_player_restart():
+    """Restart the local Squeezelite player service."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["systemctl", "restart", "squeezelite"],
+            capture_output=True, text=True, timeout=20,
+        )
+    except Exception as e:
+        log.error(f"Could not restart Squeezelite: {e}")
+        return jsonify({"ok": False, "message": i18n.t("settings.player_restart_failed")}), 500
+
+    if result.returncode != 0:
+        log.error(f"Squeezelite restart failed: {result.stderr.strip()}")
+        return jsonify({"ok": False, "message": i18n.t("settings.player_restart_failed")}), 500
+    return jsonify({"ok": True, "message": i18n.t("settings.player_restart_done")})
 
 
 # ── LMS Plugin Updates (one-click) ──────────────────────────────────────────
