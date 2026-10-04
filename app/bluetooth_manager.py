@@ -189,12 +189,28 @@ def scan_devices() -> List[dict]:
 
 # ── Pairing / Connecting / Disconnecting ─────────────────────────────────────
 
+_MAC_RE = re.compile(r"\A[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}\Z")
+
+
+def valid_mac(mac: str) -> bool:
+    """AA:BB:CC:DD:EE:FF. Checked at every entry point: the MAC ends up in
+    bluetoothctl arguments and in /etc/asound.conf, which is read by a root
+    ALSA client."""
+    return bool(_MAC_RE.match((mac or "").strip()))
+
+
 def pair_device(mac: str) -> Tuple[bool, str]:
+    if not valid_mac(mac):
+        return False, "Invalid Bluetooth address."
     if not ensure_adapter_powered():
         return False, "Bluetooth adapter not available."
 
     _run(["bluetoothctl", "pairable", "on"])
     out = _run(["bluetoothctl", "pair", mac], timeout=CONNECT_TIMEOUT)
+    # _run returns "" when bluetoothctl could not run at all – without this
+    # check the "Failed" test below would report a pairing that never happened.
+    if not out.strip():
+        return False, "Pairing failed (bluetoothctl gave no response)."
     if "Failed" in out and "Already" not in out:
         return False, f"Pairing failed: {out.strip()}"
 
@@ -204,6 +220,8 @@ def pair_device(mac: str) -> Tuple[bool, str]:
 
 
 def connect_device(mac: str) -> Tuple[bool, str]:
+    if not valid_mac(mac):
+        return False, "Invalid Bluetooth address."
     if not ensure_adapter_powered():
         return False, "Bluetooth adapter not available."
 
@@ -221,6 +239,8 @@ def connect_device(mac: str) -> Tuple[bool, str]:
 
 
 def disconnect_device(mac: str) -> Tuple[bool, str]:
+    if not valid_mac(mac):
+        return False, "Invalid Bluetooth address."
     _run(["bluetoothctl", "disconnect", mac])
 
     # If audio was routed through this device, switch back to local
@@ -233,6 +253,8 @@ def disconnect_device(mac: str) -> Tuple[bool, str]:
 
 
 def remove_device(mac: str) -> Tuple[bool, str]:
+    if not valid_mac(mac):
+        return False, "Invalid Bluetooth address."
     # Disconnect first if connected
     info = _get_device_info(mac)
     if info["connected"]:
@@ -263,6 +285,8 @@ def _backup_asound_conf():
 
 
 def switch_audio_to_bluetooth(mac: str) -> Tuple[bool, str]:
+    if not valid_mac(mac):
+        return False, "Invalid Bluetooth address."
     info = _get_device_info(mac)
     if not info["connected"]:
         return False, "Device is not connected."
