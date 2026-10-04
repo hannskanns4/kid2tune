@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# kid2tune Installer v2.9.1 for Raspberry Pi Zero 2W
+# kid2tune Installer for Raspberry Pi Zero 2W
 # Installs: Lyrion Music Server, Squeezelite, RFID Controller, I2C LCD,
 #           GPIO Buttons, Flask Web Interface
 # Usage:    sudo bash install.sh
@@ -33,6 +33,11 @@ VENV="$APP_DIR/venv"
 PYTHON="$VENV/bin/python"
 PIP="$VENV/bin/pip"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+VERSION_FILE="$SCRIPT_DIR/app/version.txt"
+
+[[ -f "$VERSION_FILE" ]] || error "Version file not found: $VERSION_FILE"
+VERSION="$(tr -d '\r\n' < "$VERSION_FILE")"
+[[ -n "$VERSION" ]] || error "Version file is empty: $VERSION_FILE"
 
 # Single source of truth: app/version.txt. A hardcoded value here used to
 # overwrite the copied file, so every fresh box reported the wrong version
