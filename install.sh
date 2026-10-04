@@ -20,7 +20,6 @@ error() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 step()  { echo -e "\n${CYAN}══════════════════════════════════════════${NC}"; echo -e "${CYAN}  $*${NC}"; echo -e "${CYAN}══════════════════════════════════════════${NC}"; }
 
 # ── Version & Configuration ────────────────────────────────────────────────
-VERSION="2.9.1"
 SWAP_FILE="/var/tmp/install_swap"
 BTN_VOL_UP=19
 BTN_VOL_DOWN=26
@@ -34,6 +33,11 @@ VENV="$APP_DIR/venv"
 PYTHON="$VENV/bin/python"
 PIP="$VENV/bin/pip"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Single source of truth: app/version.txt. A hardcoded value here used to
+# overwrite the copied file, so every fresh box reported the wrong version
+# and permanently believed an update was available.
+VERSION="$(cat "$SCRIPT_DIR/app/version.txt" 2>/dev/null || echo "0.0.0")"
 
 # =============================================================================
 # STEP 0: Prerequisites
@@ -57,10 +61,16 @@ info "Version: $VERSION"
 # Create temporary swap (Pi Zero 2W has only 512MB RAM)
 if ! swapon --show | grep -q "$SWAP_FILE"; then
     info "Creating temporary swap (1GB) for installation (Pi Zero 2W has only 512MB RAM)..."
-    dd if=/dev/zero of="$SWAP_FILE" bs=1M count=1024 status=none 2>/dev/null || true
-    chmod 600 "$SWAP_FILE"
-    mkswap "$SWAP_FILE" >/dev/null 2>&1 || true
-    swapon "$SWAP_FILE" 2>/dev/null || true
+    # If dd fails (e.g. disk full) the following chmod would abort the whole
+    # installer via set -e with a misleading error – so guard the block.
+    if dd if=/dev/zero of="$SWAP_FILE" bs=1M count=1024 status=none 2>/dev/null; then
+        chmod 600 "$SWAP_FILE"
+        mkswap "$SWAP_FILE" >/dev/null 2>&1 || true
+        swapon "$SWAP_FILE" 2>/dev/null || true
+    else
+        warn "Could not create swap file – continuing without extra swap."
+        rm -f "$SWAP_FILE"
+    fi
 fi
 
 # =============================================================================
@@ -138,8 +148,14 @@ else
     info "LMS version: $LMS_VERSION"
     LMS_URL="https://downloads.lms-community.org/LyrionMusicServer_v${LMS_VERSION}/lyrionmusicserver_${LMS_VERSION}_all.deb"
 
-    # Download to /home/pi instead of /tmp (tmpfs has too little space on Pi Zero 2W)
-    LMS_DEB="/home/pi/lms_install.deb"
+    # Download into a root-only directory, not a predictable path under
+    # /home/pi: as root, wget -O follows an existing symlink and would
+    # overwrite its target, and the .deb could be swapped between download
+    # and install. Not /tmp – tmpfs is too small on the Pi Zero 2W.
+    LMS_WORK="$(mktemp -d /var/tmp/kid2tune-lms.XXXXXX)"
+    chmod 700 "$LMS_WORK"
+    trap 'rm -rf "$LMS_WORK"' EXIT
+    LMS_DEB="$LMS_WORK/lms_install.deb"
     wget --show-progress -O "$LMS_DEB" "$LMS_URL" || error "LMS download failed."
 
     while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
@@ -297,8 +313,11 @@ info "Python files copied."
 cp "$SCRIPT_DIR/app/templates/"*.html "$APP_DIR/templates/"
 info "HTML templates copied."
 
-# Static (CSS)
-cp "$SCRIPT_DIR/app/static/"* "$APP_DIR/static/" 2>/dev/null || true
+# Static (CSS). Recursive: the OTA update copies subdirectories too, so a
+# non-recursive install would produce a different file set than an update.
+if [[ -d "$SCRIPT_DIR/app/static" ]]; then
+    cp -r "$SCRIPT_DIR/app/static/." "$APP_DIR/static/"
+fi
 info "Static files copied."
 
 # Language files
@@ -335,14 +354,18 @@ else
     info "config.json already exists – not overwritten."
 fi
 
-# Always update version
-echo "$VERSION" > "$APP_DIR/version.txt"
-python3 -c "
-import json
-with open('$APP_DIR/config.json') as f: cfg = json.load(f)
-cfg['version'] = '$VERSION'
-with open('$APP_DIR/config.json', 'w') as f: json.dump(cfg, f, indent=2)
-" 2>/dev/null || true
+# config.json holds WiFi/NAS passwords, the PIN hash and the session key
+chmod 600 "$APP_DIR/config.json"
+
+# Write the version through config_manager: locked, atomic and fsynced.
+# The previous inline truncating write could corrupt config.json when the
+# box lost power (or a daemon wrote at the same time) during a re-run.
+"$PYTHON" -c "
+import sys
+sys.path.insert(0, '$APP_DIR')
+import config_manager
+config_manager.update_config(lambda c: c.__setitem__('version', '$VERSION'))
+" || warn "Could not write version into config.json."
 info "Version $VERSION set."
 
 # venv: enable system packages for lgpio
@@ -506,12 +529,17 @@ fi
 # Permanent swap (256 MB) as safety net for Pi Zero 2W
 PERM_SWAP="/var/swap"
 if [[ ! -f "$PERM_SWAP" ]]; then
-    dd if=/dev/zero of="$PERM_SWAP" bs=1M count=256 status=none 2>/dev/null || true
-    chmod 600 "$PERM_SWAP"
-    mkswap "$PERM_SWAP" >/dev/null 2>&1 || true
-    echo "$PERM_SWAP none swap sw 0 0" >> /etc/fstab
-    swapon "$PERM_SWAP" 2>/dev/null || true
-    info "Permanent swap (256 MB) created."
+    if dd if=/dev/zero of="$PERM_SWAP" bs=1M count=256 status=none 2>/dev/null; then
+        chmod 600 "$PERM_SWAP"
+        mkswap "$PERM_SWAP" >/dev/null 2>&1 || true
+        # Only once: a second run would otherwise duplicate the fstab line
+        grep -q "^$PERM_SWAP " /etc/fstab || echo "$PERM_SWAP none swap sw 0 0" >> /etc/fstab
+        swapon "$PERM_SWAP" 2>/dev/null || true
+        info "Permanent swap (256 MB) created."
+    else
+        warn "Could not create permanent swap file."
+        rm -f "$PERM_SWAP"
+    fi
 else
     info "Permanent swap already exists."
 fi
@@ -553,7 +581,11 @@ step "Step 11: Permissions"
 
 chmod +x "$APP_DIR/"*.py
 chown -R root:root "$APP_DIR"
-chmod 644 "$APP_DIR/config.json"
+# 600, not 644: config.json contains the WiFi/NAS passwords, the GitHub token,
+# the PIN hash and the Flask session key. World-readable would let any local
+# account forge an unlocked adult session.
+chmod 600 "$APP_DIR/config.json"
+[[ -f "$APP_DIR/config.json.bak" ]] && chmod 600 "$APP_DIR/config.json.bak"
 info "Permissions set."
 
 # =============================================================================
