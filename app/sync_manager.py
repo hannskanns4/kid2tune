@@ -240,7 +240,7 @@ def _mount_share() -> Tuple[bool, str]:
 
             try:
                 result = subprocess.run(
-                    ["mount", "-t", "cifs", "--", nas_share, mount_point, "-o", mount_opts],
+                    ["mount", "-t", "cifs", "-o", mount_opts, "--", nas_share, mount_point],
                     capture_output=True, text=True, timeout=15,
                 )
                 if result.returncode == 0:
