@@ -393,6 +393,7 @@ def main():
     standby_timeout = 15
     idle_standby_secs = IDLE_STANDBY_SECONDS  # Local copy, updated from config
 
+    error_streak = 0
     while True:
         try:
             # ── Shutdown Confirmation ────────────────────────────────────────
@@ -689,6 +690,7 @@ def main():
                     lcd.write_string(umlaut(new))
 
             prev_lines = lines
+            error_streak = 0
 
         except KeyboardInterrupt:
             lcd.clear()
@@ -696,6 +698,9 @@ def main():
             break
         except Exception as e:
             log.error(f"Error: {e}")
+            error_streak = min(error_streak + 1, 5)
+            time.sleep(min(30, 2 ** error_streak))
+            continue
 
         time.sleep(1)
 

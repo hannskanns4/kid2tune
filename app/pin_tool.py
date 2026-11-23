@@ -7,6 +7,8 @@ Must run as root (config.json is root-only):
     sudo python3 /opt/lms-controller/pin_tool.py status
     sudo python3 /opt/lms-controller/pin_tool.py set 1234
     sudo python3 /opt/lms-controller/pin_tool.py disable
+    sudo python3 /opt/lms-controller/pin_tool.py cluster-set <shared-secret>
+    sudo python3 /opt/lms-controller/pin_tool.py cluster-show
 
 `set` stores a new PIN (and enables protection), `disable` switches the
 adult area off entirely. Takes effect immediately, no service restart needed.
@@ -51,6 +53,28 @@ def main():
         security_manager.set_enabled(False)
         print("Adult area disabled. (Stored PIN is kept and can be "
               "re-enabled in the web UI.)")
+
+    elif cmd == "cluster-set":
+        if len(sys.argv) < 3:
+            print("Usage: pin_tool.py cluster-set <shared-secret>  (32+ characters)")
+            sys.exit(1)
+        secret = sys.argv[2].strip()
+        if len(secret) < 32 or any(ch.isspace() for ch in secret):
+            print("Error: cluster secret must be at least 32 non-whitespace characters.")
+            sys.exit(1)
+        def _update(cfg):
+            cfg.setdefault("security", {})["cluster_secret"] = secret
+        import config_manager
+        config_manager.update_config(_update)
+        print("Cluster secret saved.")
+
+    elif cmd == "cluster-show":
+        import config_manager
+        secret = config_manager.read_config().get("security", {}).get("cluster_secret", "")
+        if not secret:
+            print("No cluster secret configured.")
+            sys.exit(1)
+        print(secret)
 
     else:
         usage()

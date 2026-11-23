@@ -14,7 +14,7 @@ import subprocess
 import time
 import logging
 import threading
-import requests
+from functools import wraps
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,10 +31,32 @@ import sys
 sys.path.insert(0, DIR)
 import config_manager
 import lms_client
+import cluster_auth
+
+_sync_lock = threading.Lock()
 
 
 def _load_config() -> dict:
     return config_manager.read_config()
+
+
+def _cluster_secret() -> str:
+    return _load_config().get("security", {}).get("cluster_secret", "")
+
+
+def _serialize_state_change(fn):
+    @wraps(fn)
+    def wrapped(*args, **kwargs):
+        if not _sync_lock.acquire(blocking=False):
+            log.warning("Multiroom state change already in progress.")
+            if fn.__name__ == "unsync_box":
+                return {"ok": False, "message": "Multiroom state change already in progress."}
+            return False
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _sync_lock.release()
+    return wrapped
 
 
 def _write_state(state: dict):
@@ -69,7 +91,10 @@ def discover_boxes() -> list:
         if ip == own_ip:
             return None
         try:
-            r = requests.get(f"http://{ip}:80/api/multiroom/status", timeout=1)
+            r = cluster_auth.signed_request(
+                "GET", f"http://{ip}:80/api/multiroom/status",
+                _cluster_secret(), timeout=1,
+            )
             if r.ok:
                 data = r.json()
                 # Only real kid2tune boxes (response must contain "role" or "active")
@@ -108,7 +133,9 @@ def _call_box(host: str, endpoint: str, data: dict = None) -> bool:
     """Sends a POST request to another box."""
     url = f"http://{host}:80{endpoint}"
     try:
-        r = requests.post(url, json=data or {}, timeout=JOIN_TIMEOUT)
+        r = cluster_auth.signed_request(
+            "POST", url, _cluster_secret(), json=data or {}, timeout=JOIN_TIMEOUT,
+        )
         result = r.json()
         if result.get("ok"):
             log.info(f"{host}: {result.get('message', 'OK')}")
@@ -121,6 +148,7 @@ def _call_box(host: str, endpoint: str, data: dict = None) -> bool:
         return False
 
 
+@_serialize_state_change
 def activate_master():
     """Activates multiroom: redirect slaves, synchronize players."""
     own_ip = get_own_ip()
@@ -192,6 +220,7 @@ def activate_master():
     return True
 
 
+@_serialize_state_change
 def deactivate_master():
     """Deactivates multiroom: unsync all players, return slaves to localhost."""
     log.info("Deactivating multiroom...")
@@ -282,6 +311,7 @@ def _is_squeezelite(pid: int) -> bool:
         return False
 
 
+@_serialize_state_change
 def join_master(master_ip: str):
     """Called on slave boxes: redirect squeezelite to master."""
     global _manual_proc
@@ -344,6 +374,7 @@ def join_master(master_ip: str):
     return True
 
 
+@_serialize_state_change
 def leave_master():
     """Called on slave boxes: reset squeezelite back to localhost."""
     log.info("Resetting squeezelite to localhost...")
@@ -365,9 +396,6 @@ def leave_master():
 
 
 # ── Targeted Sync Functions (for Dashboard) ─────────────────────────────────
-
-_sync_lock = threading.Lock()
-
 
 def sync_boxes(box_ips: list) -> dict:
     """Synchronizes selected boxes with this box as master."""
@@ -419,7 +447,10 @@ def _do_sync(box_ips: list) -> dict:
     new_hostnames = set()
     for box_ip in new_boxes:
         try:
-            r = requests.get(f"http://{box_ip}:80/api/version", timeout=2)
+            r = cluster_auth.signed_request(
+                "GET", f"http://{box_ip}:80/api/version",
+                _cluster_secret(), timeout=2,
+            )
             h = r.json().get("hostname", "")
             if h:
                 new_hostnames.add(h.lower())
@@ -468,6 +499,7 @@ def _do_sync(box_ips: list) -> dict:
     return {"ok": True, "message": f"{len(joined)} box(es) synchronized.", "joined": joined}
 
 
+@_serialize_state_change
 def unsync_box(box_ip: str) -> dict:
     """Removes a single box from the sync group (from master)."""
     state = get_status()
@@ -487,7 +519,10 @@ def unsync_box(box_ip: str) -> dict:
         name = p.get("name", "").lower()
         # Try to find the player by hostname
         try:
-            r = requests.get(f"http://{box_ip}:80/api/version", timeout=2)
+            r = cluster_auth.signed_request(
+                "GET", f"http://{box_ip}:80/api/version",
+                _cluster_secret(), timeout=2,
+            )
             remote_hostname = r.json().get("hostname", "").lower()
             if name == remote_hostname and pid:
                 lms_client.unsync(pid)

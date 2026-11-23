@@ -39,11 +39,6 @@ VERSION_FILE="$SCRIPT_DIR/app/version.txt"
 VERSION="$(tr -d '\r\n' < "$VERSION_FILE")"
 [[ -n "$VERSION" ]] || error "Version file is empty: $VERSION_FILE"
 
-# Single source of truth: app/version.txt. A hardcoded value here used to
-# overwrite the copied file, so every fresh box reported the wrong version
-# and permanently believed an update was available.
-VERSION="$(cat "$SCRIPT_DIR/app/version.txt" 2>/dev/null || echo "0.0.0")"
-
 # =============================================================================
 # STEP 0: Prerequisites
 # =============================================================================
@@ -115,8 +110,6 @@ apt-get install -y \
     libssl-dev \
     libjpeg-dev \
     cifs-utils \
-    hostapd \
-    dnsmasq \
     iw \
     wireless-tools \
     bluez \
@@ -301,7 +294,7 @@ step "Step 5: Set up Python environment"
 mkdir -p "$APP_DIR/templates" "$APP_DIR/static" "$APP_DIR/lang"
 python3 -m venv "$VENV"
 $PIP install --upgrade pip -q
-$PIP install RPi.GPIO spidev mfrc522 smbus2 RPLCD flask requests gpiozero -q
+$PIP install -r "$SCRIPT_DIR/requirements.txt" -q
 info "Python packages installed."
 
 # =============================================================================
@@ -334,17 +327,19 @@ cp "$SCRIPT_DIR/app/config.json.template" "$APP_DIR/" 2>/dev/null || true
 
 # Music directory
 mkdir -p /home/music
-chmod 777 /home/music
+chmod 755 /home/music
 
 # =============================================================================
 # STEP 7: Create config.json
 # =============================================================================
 step "Step 7: Configuration"
+AP_PASSWORD="$($PYTHON -c 'import secrets; print(secrets.token_urlsafe(15))')"
 
 if [[ ! -f "$APP_DIR/config.json" ]]; then
     HOSTNAME=$(hostname)
     BOX_ID="${HOSTNAME}-$(cat /etc/machine-id 2>/dev/null | cut -c1-8 || echo unknown)"
     sed -e "s/__VERSION__/$VERSION/" \
+        -e "s/__AP_PASSWORD__/$AP_PASSWORD/" \
         -e "s/__BTN_VOL_UP__/$BTN_VOL_UP/" \
         -e "s/__BTN_VOL_DOWN__/$BTN_VOL_DOWN/" \
         -e "s/__BTN_NEXT__/$BTN_NEXT/" \
@@ -358,6 +353,49 @@ if [[ ! -f "$APP_DIR/config.json" ]]; then
 else
     info "config.json already exists – not overwritten."
 fi
+chmod 600 "$APP_DIR/config.json"
+
+# Bootstrap a random AP password, adult-area PIN and box-cluster secret.
+# Existing PINs/secrets are preserved; generated values are printed once below.
+BOOTSTRAP="$("$PYTHON" - "$APP_DIR" "$AP_PASSWORD" <<'PY'
+import os
+import secrets
+import sys
+sys.path.insert(0, sys.argv[1])
+import config_manager
+import security_manager
+
+cfg = config_manager.read_config()
+sec = cfg.get("security", {})
+pin = ""
+if not (sec.get("pin_hash") and sec.get("pin_salt")):
+    pin = f"{secrets.randbelow(900000) + 100000:06d}"
+    security_manager.set_pin(pin)
+    security_manager.set_enabled(True)
+
+cluster_secret = sec.get("cluster_secret", "")
+if not cluster_secret:
+    cluster_secret = secrets.token_urlsafe(32)
+    def set_cluster_secret(current):
+        current.setdefault("security", {})["cluster_secret"] = cluster_secret
+    config_manager.update_config(set_cluster_secret)
+
+wifi = cfg.get("wifi", {})
+ap_password = wifi.get("ap_password", "")
+if not ap_password or ap_password == "Geheim123!":
+    ap_password = sys.argv[2]
+    def set_ap_password(current):
+        current.setdefault("wifi", {})["ap_password"] = ap_password
+    config_manager.update_config(set_ap_password)
+
+print(pin)
+print(cluster_secret)
+print(ap_password)
+PY
+)"
+SETUP_PIN="$(printf '%s\n' "$BOOTSTRAP" | sed -n '1p')"
+CLUSTER_SECRET="$(printf '%s\n' "$BOOTSTRAP" | sed -n '2p')"
+AP_PASSWORD="$(printf '%s\n' "$BOOTSTRAP" | sed -n '3p')"
 
 # config.json holds WiFi/NAS passwords, the PIN hash and the session key
 chmod 600 "$APP_DIR/config.json"
@@ -511,6 +549,7 @@ done
 step "Step 10: Boot optimization"
 
 # Disable unnecessary services
+mkdir -p /etc/cloud
 touch /etc/cloud/cloud-init.disabled
 for svc in cloud-init-main cloud-init-local cloud-init-network cloud-config cloud-final ModemManager NetworkManager-wait-online udisks2; do
     systemctl disable "$svc" 2>/dev/null || true
@@ -607,8 +646,13 @@ echo -e "${GREEN}║  Controller-Web:   http://${PI_IP}:80                ${NC}"
 echo -e "${GREEN}║  Dashboard:        http://${PI_IP}:80/dashboard      ${NC}"
 echo -e "${GREEN}╠══════════════════════════════════════════════════════╣${NC}"
 echo -e "${GREEN}║  GPIO: Vol+=${BTN_VOL_UP} Vol-=${BTN_VOL_DOWN} Next=${BTN_NEXT} Prev=${BTN_PREV} Pause=${BTN_PAUSE}   ${NC}"
-echo -e "${GREEN}║  AP-Fallback: $(hostname)-kid2tune / Geheim123!     ${NC}"
+echo -e "${GREEN}║  AP-Fallback password: ${AP_PASSWORD}   ${NC}"
 echo -e "${GREEN}╚══════════════════════════════════════════════════════╝${NC}"
+if [[ -n "$SETUP_PIN" ]]; then
+    echo -e "${YELLOW}Adult-area PIN (save this now): ${SETUP_PIN}${NC}"
+fi
+echo "Box cluster secret (configure on every box for updates/multiroom):"
+echo "$CLUSTER_SECRET"
 echo ""
 # Remove temporary swap
 if swapon --show | grep -q "$SWAP_FILE"; then

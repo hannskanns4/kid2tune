@@ -28,7 +28,7 @@ _UPDATE_LOCK = threading.Lock()
 PROTECTED_FILES = {
     "config.json", "config.json.lock",
     "play_history.json", "play_history.json.lock",
-    "sync_pending.json",
+    "sync_pending.json", "sync_pending.json.lock",
 }
 
 # Directories that never contain deployable code
@@ -55,6 +55,33 @@ def file_md5(path: str) -> str:
         for chunk in iter(lambda: f.read(65536), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def ensure_runtime_dependencies() -> bool:
+    """Ensures the production WSGI server is present before restarting web."""
+    python = os.path.join(APP_DIR, "venv", "bin", "python")
+    pip = os.path.join(APP_DIR, "venv", "bin", "pip")
+    if not os.path.isfile(python) or not os.path.isfile(pip):
+        log.error("Application virtual environment not found.")
+        return False
+    check = subprocess.run(
+        [python, "-c", "import waitress"],
+        capture_output=True, timeout=10,
+    )
+    if check.returncode == 0:
+        return True
+    try:
+        install = subprocess.run(
+            [pip, "install", "waitress>=3.0.0"],
+            capture_output=True, text=True, timeout=120,
+        )
+    except Exception as e:
+        log.error(f"Waitress installation failed: {e}")
+        return False
+    if install.returncode != 0:
+        log.error(f"Waitress installation failed: {install.stderr.strip()}")
+        return False
+    return True
 
 
 import re
@@ -215,6 +242,9 @@ def _pull_and_update() -> tuple:
                     py_compile.compile(os.path.join(src_app, rel), doraise=True)
                 except py_compile.PyCompileError as e:
                     return False, f"Syntax error in {rel}: {str(e)[:300]}"
+
+        if not ensure_runtime_dependencies():
+            return False, "Waitress is unavailable; update was not installed."
 
         # 3. Copy ALL files (atomic per file: copy to temp name, then rename).
         # Every replaced file is backed up first so a failure part-way through

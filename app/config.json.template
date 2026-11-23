@@ -24,7 +24,7 @@
   },
   "wifi": {
     "ap_ssid": "__HOSTNAME__-kid2tune",
-    "ap_password": "Geheim123!",
+    "ap_password": "__AP_PASSWORD__",
     "ap_channel": 7,
     "check_interval": 30
   },
@@ -53,5 +53,9 @@
     "check_interval": 15
   },
   "known_boxes": {},
-  "github_token": ""
+  "github_token": "",
+  "security": {
+    "adult_area_enabled": true,
+    "cluster_secret": ""
+  }
 }

@@ -4,7 +4,7 @@ wifi_manager.py – WiFi manager with access point fallback
 Features:
 - Scans available WiFi networks
 - Manages known networks via wpa_supplicant
-- Starts AP mode (hostapd + dnsmasq) when no known WiFi is reachable
+- Starts AP mode via NetworkManager when no known WiFi is reachable
 - Switches back to client mode as soon as a known WiFi is available again
 """
 import json
@@ -31,6 +31,11 @@ WPA_CONF = "/etc/wpa_supplicant/wpa_supplicant.conf"
 IFACE = "wlan0"
 
 
+def _secure_wpa_config():
+    if os.path.exists(WPA_CONF):
+        os.chmod(WPA_CONF, 0o600)
+
+
 # ── Configuration ────────────────────────────────────────────────────────────
 
 def _load_config() -> dict:
@@ -45,7 +50,7 @@ def get_wifi_config() -> dict:
     cfg = _load_config()
     return cfg.get("wifi", {
         "ap_ssid": "kid2tuneAP",
-        "ap_password": "Geheim123!",
+        "ap_password": "",
         "ap_channel": 7,
         "check_interval": 30,
     })
@@ -126,6 +131,7 @@ def get_known_networks() -> List[dict]:
     if not os.path.exists(WPA_CONF):
         return networks
     try:
+        _secure_wpa_config()
         with open(WPA_CONF) as f:
             content = f.read()
         # Parse network blocks
@@ -182,6 +188,8 @@ def add_network(ssid: str, password: str = "") -> Tuple[bool, str]:
             f.write("ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev\n")
             f.write("update_config=1\n")
             f.write(f"country=DE\n\n")
+    else:
+        _secure_wpa_config()
 
     # Check if network already exists
     with open(WPA_CONF) as f:
@@ -200,6 +208,7 @@ def add_network(ssid: str, password: str = "") -> Tuple[bool, str]:
 
     with open(WPA_CONF, "a") as f:
         f.write(block)
+    _secure_wpa_config()
 
     log.info(f"Network '{ssid}' added.")
     return True, f"Network '{ssid}' added."
@@ -210,6 +219,7 @@ def remove_network(ssid: str) -> Tuple[bool, str]:
     if not os.path.exists(WPA_CONF):
         return False, "wpa_supplicant.conf not found."
 
+    _secure_wpa_config()
     with open(WPA_CONF) as f:
         content = f.read()
 
@@ -222,6 +232,7 @@ def remove_network(ssid: str) -> Tuple[bool, str]:
 
     with open(WPA_CONF, "w") as f:
         f.write(new_content)
+    _secure_wpa_config()
 
     log.info(f"Network '{ssid}' removed.")
     return True, f"Network '{ssid}' removed."
@@ -298,10 +309,10 @@ def start_ap() -> Tuple[bool, str]:
     """Starts Access Point mode via NetworkManager."""
     wifi_cfg = get_wifi_config()
     ssid = wifi_cfg.get("ap_ssid", "kid2tuneAP")
-    password = wifi_cfg.get("ap_password", "Geheim123!")
+    password = wifi_cfg.get("ap_password", "")
 
     if len(password) < 8:
-        return False, "AP password must be at least 8 characters."
+        return False, "AP password is not configured (minimum 8 characters)."
 
     log.info(f"Starting AP mode: SSID={ssid}")
 

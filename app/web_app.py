@@ -38,6 +38,8 @@ import update_manager
 import play_history
 import lms_plugins
 import i18n
+import cluster_auth
+import csv_safety
 
 # Load language from config.json
 _lang = config_manager.read_config().get("language", "de")
@@ -117,7 +119,7 @@ PUBLIC_ENDPOINTS = {
 # never apply. They are protected by the cluster secret instead (see
 # _cluster_authorized) and are restricted to callers on the local network.
 CLUSTER_ENDPOINTS = {
-    "update_version", "update_package", "update_git",
+    "update_version", "update_package", "update_check", "update_git",
     "multiroom_join", "multiroom_leave",
 }
 
@@ -155,16 +157,17 @@ def _cluster_authorized() -> bool:
     """Checks the shared secret for box-to-box calls.
 
     `security.cluster_secret` must be identical on all boxes of a household.
-    As long as it is unset the endpoints stay open (as before) — otherwise an
-    update would lock out boxes that do not know the secret yet.
+    An unset secret fails closed. Configure the same secret on every box
+    before using box-to-box updates or multiroom control.
     """
-    import secrets as _secrets
     cfg = load_config()
     expected = cfg.get("security", {}).get("cluster_secret", "")
     if not expected:
-        return True
-    supplied = request.headers.get("X-Cluster-Secret", "")
-    return _secrets.compare_digest(supplied, expected)
+        return False
+    return cluster_auth.verify_request(
+        request.method, request.path, request.get_data(cache=True),
+        request.headers, expected,
+    )
 
 
 @app.before_request
@@ -184,6 +187,12 @@ def _adult_gate():
                         f"{request.remote_addr} -> {request.path}")
             return jsonify({"ok": False, "message": "Not allowed."}), 403
         if not _cluster_authorized():
+            # The local update button is a browser request, not a box-to-box
+            # call. Preserve updates on installations where PIN protection is
+            # disabled; when enabled, the browser must unlock the adult area.
+            if (endpoint in ("update_check", "update_git")
+                    and not _adult_locked()):
+                return None
             log.warning(f"Box-to-box call with wrong cluster secret: "
                         f"{request.remote_addr} -> {request.path}")
             return jsonify({"ok": False, "message": "Invalid cluster secret."}), 403
@@ -612,17 +621,17 @@ def rfid_csv_export():
     writer.writeheader()
     for card_id, entry in sorted(cfg.get("rfid_mappings", {}).items()):
         writer.writerow({
-            "card_id": card_id,
-            "link": entry.get("value", ""),
-            "description": entry.get("label", ""),
-            "type": entry.get("type", "url"),
+            "card_id": csv_safety.spreadsheet_safe_cell(card_id),
+            "link": csv_safety.spreadsheet_safe_cell(entry.get("value", "")),
+            "description": csv_safety.spreadsheet_safe_cell(entry.get("label", "")),
+            "type": csv_safety.spreadsheet_safe_cell(entry.get("type", "url")),
             "resume": "1" if entry.get("resume") else "0",
         })
     for entry in cfg.get("pending_mappings", []):
         writer.writerow({
-            "link": entry.get("value", ""),
-            "description": entry.get("label", ""),
-            "type": entry.get("type", "url"),
+            "link": csv_safety.spreadsheet_safe_cell(entry.get("value", "")),
+            "description": csv_safety.spreadsheet_safe_cell(entry.get("label", "")),
+            "type": csv_safety.spreadsheet_safe_cell(entry.get("type", "url")),
             "resume": "1" if entry.get("resume") else "0",
         })
     return send_file(
@@ -1848,6 +1857,11 @@ def update_package():
         # Runtime data (config, history) must never come from a package
         safe_members = [m for m in tar.getmembers()
                         if os.path.basename(m.name) not in update_manager.PROTECTED_FILES]
+        if not update_manager.ensure_runtime_dependencies():
+            return jsonify({
+                "ok": False,
+                "message": "Waitress is unavailable; update was not installed.",
+            }), 503
         # filter= was only backported to 3.9.17/3.10.12/3.11.4 – on an older
         # interpreter it raises TypeError and the update would fail entirely.
         # The members are already validated above.
@@ -1873,6 +1887,12 @@ def update_trigger():
     """Bundles ALL local code files and sends them to all boxes on the network.
     Uses the same file list as the git update (update_manager.iter_code_files),
     so no category (e.g. static/) can be forgotten."""
+    secret = load_config().get("security", {}).get("cluster_secret", "")
+    if not secret:
+        return jsonify({
+            "ok": False,
+            "message": "Configure a cluster secret before updating other boxes.",
+        }), 400
     import tarfile, io
     # Create tar.gz
     buf = io.BytesIO()
@@ -1887,9 +1907,11 @@ def update_trigger():
     results = []
     for box_ip in boxes:
         try:
-            import requests as _req
             files = {"package": ("update.tar.gz", io.BytesIO(package_data), "application/gzip")}
-            r = _req.post(f"http://{box_ip}:80/api/update/package", files=files, timeout=30)
+            r = cluster_auth.signed_request(
+                "POST", f"http://{box_ip}:80/api/update/package", secret,
+                files=files, timeout=30,
+            )
             d = r.json()
             results.append({"box": box_ip, "ok": d.get("ok"), "message": d.get("message")})
         except Exception as e:
@@ -1929,33 +1951,36 @@ def update_git_all():
     """Updates all boxes on the network via git pull.
     Runs completely asynchronously — response returns immediately."""
     cfg = load_config()
-    token = cfg.get("github_token", "")
     known = cfg.get("known_boxes", {})
+    if not cfg.get("security", {}).get("cluster_secret"):
+        return jsonify({
+            "ok": False,
+            "message": "Configure a cluster secret before updating other boxes.",
+        }), 400
 
     def _do_all():
-        import requests as _req
         import time as _t
         _t.sleep(1)
 
         # 1. Known boxes from config (fast, no subnet scan needed)
         box_ips = list(set(known.values())) if known else multiroom_manager.discover_boxes()
         own_ip = multiroom_manager.get_own_ip()
+        secret = cfg.get("security", {}).get("cluster_secret", "")
 
-        # 2. On each remote box: set token, check, update if needed
+        # 2. On each remote box: check and update if needed
         for box_ip in box_ips:
             if box_ip == own_ip:
                 continue
             try:
-                # Set token
-                if token:
-                    try:
-                        _req.post(f"http://{box_ip}:80/api/update/token",
-                                  json={"token": token}, timeout=5)
-                    except Exception:
-                        pass
                 # Check if update is needed
                 try:
-                    r = _req.get(f"http://{box_ip}:80/api/update/check", timeout=60)
+                    r = cluster_auth.signed_request(
+                        "GET", f"http://{box_ip}:80/api/update/check",
+                        secret, timeout=60,
+                    )
+                    if not r.ok:
+                        log.warning(f"{box_ip}: update check returned HTTP {r.status_code}")
+                        continue
                     info = r.json()
                     if not info.get("update_available"):
                         log.info(f"{box_ip}: already up to date ({info.get('current')})")
@@ -1964,8 +1989,14 @@ def update_git_all():
                 except Exception:
                     pass  # Update anyway if in doubt
                 # Trigger update
-                _req.post(f"http://{box_ip}:80/api/update/git", timeout=10)
-                log.info(f"{box_ip}: update started")
+                r = cluster_auth.signed_request(
+                    "POST", f"http://{box_ip}:80/api/update/git",
+                    secret, timeout=10,
+                )
+                if r.ok:
+                    log.info(f"{box_ip}: update started")
+                else:
+                    log.warning(f"{box_ip}: update request returned HTTP {r.status_code}")
             except Exception as e:
                 log.warning(f"{box_ip}: update failed: {e}")
 
@@ -2710,4 +2741,13 @@ if __name__ == "__main__":
     threading.Thread(target=_bluetooth_daemon_loop, daemon=True, name="bluetooth").start()
     logging.getLogger("WEB").info("WiFi and Bluetooth threads started.")
 
-    app.run(host="0.0.0.0", port=80, debug=False, threaded=True)
+    try:
+        from waitress import serve
+    except ImportError:
+        logging.getLogger("WEB").critical(
+            "Waitress is not installed; using Flask's fallback server. "
+            "Run pip install -r requirements.txt."
+        )
+        app.run(host="0.0.0.0", port=80, debug=False, threaded=True)
+    else:
+        serve(app, host="0.0.0.0", port=80, threads=8)

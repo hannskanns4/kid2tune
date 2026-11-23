@@ -11,6 +11,7 @@ import subprocess
 import time
 import logging
 import signal
+import fcntl
 from typing import List, Tuple
 
 logging.basicConfig(
@@ -23,7 +24,7 @@ DIR = os.path.dirname(os.path.abspath(__file__))
 ASOUND_CONF = "/etc/asound.conf"
 CONNECT_TIMEOUT = 30
 SCAN_DURATION = 10
-SCAN_LOCK = "/tmp/bt_scanning"
+SCAN_LOCK = "/run/lock/lms-bt-scanning.lock"
 
 import sys
 sys.path.insert(0, DIR)
@@ -119,17 +120,25 @@ def get_paired_devices() -> List[dict]:
 # ── Scan ─────────────────────────────────────────────────────────────────────
 
 def scan_devices() -> List[dict]:
-    if os.path.exists(SCAN_LOCK):
+    lock_fd = os.open(
+        SCAN_LOCK,
+        os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(lock_fd)
         log.warning("Scan already in progress.")
         return []
-
-    if not ensure_adapter_powered():
-        log.error("Bluetooth adapter not available.")
-        return []
+    except Exception:
+        os.close(lock_fd)
+        raise
 
     try:
-        with open(SCAN_LOCK, "w") as f:
-            f.write(str(os.getpid()))
+        if not ensure_adapter_powered():
+            log.error("Bluetooth adapter not available.")
+            return []
 
         # bluetoothctl scan finds both BR/EDR and LE devices
         try:
@@ -181,10 +190,25 @@ def scan_devices() -> List[dict]:
         log.info(f"Scan complete: {len(devices)} device(s) found.")
         return devices
     finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+
+
+def _is_scan_active() -> bool:
+    lock_fd = os.open(
+        SCAN_LOCK,
+        os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    try:
         try:
-            os.remove(SCAN_LOCK)
-        except OSError:
-            pass
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(lock_fd)
 
 
 # ── Pairing / Connecting / Disconnecting ─────────────────────────────────────
@@ -417,7 +441,7 @@ def get_connection_status() -> dict:
         "available": available,
         "active_output": "local",
         "connected_device": None,
-        "scanning": os.path.exists(SCAN_LOCK),
+        "scanning": _is_scan_active(),
     }
 
     if active_mac:

@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 import logging
+from contextlib import contextmanager
 
 log = logging.getLogger(__name__)
 
@@ -21,12 +22,21 @@ _LOCK_PATH = HISTORY_PATH + ".lock"
 MAX_ENTRIES = 10
 
 
-def _read() -> list:
+@contextmanager
+def _lock(mode):
+    lock_fd = os.open(_LOCK_PATH, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(lock_fd, mode)
+        yield
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+
+
+def _read_unlocked() -> list:
     if not os.path.exists(HISTORY_PATH):
         return []
-    lock_fd = os.open(_LOCK_PATH, os.O_CREAT | os.O_RDWR)
     try:
-        fcntl.flock(lock_fd, fcntl.LOCK_SH)
         with open(HISTORY_PATH) as f:
             data = json.load(f)
             if isinstance(data, list):
@@ -34,39 +44,34 @@ def _read() -> list:
             return []
     except (OSError, json.JSONDecodeError):
         return []
-    finally:
-        fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        os.close(lock_fd)
 
 
-def _write(entries: list):
-    lock_fd = os.open(_LOCK_PATH, os.O_CREAT | os.O_RDWR)
+def _write_unlocked(entries: list):
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=DIR, suffix=".json.tmp")
     try:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
-        tmp_fd, tmp_path = tempfile.mkstemp(dir=DIR, suffix=".json.tmp")
+        with os.fdopen(tmp_fd, "w") as f:
+            json.dump(entries, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, HISTORY_PATH)
+    except Exception:
         try:
-            with os.fdopen(tmp_fd, "w") as f:
-                json.dump(entries, f, indent=2)
-            os.replace(tmp_path, HISTORY_PATH)
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
-    finally:
-        fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        os.close(lock_fd)
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def get_history() -> list:
     """Returns the play history (newest first)."""
-    return _read()
+    with _lock(fcntl.LOCK_SH):
+        return _read_unlocked()
 
 
 def clear_history():
     """Removes all entries."""
-    _write([])
+    with _lock(fcntl.LOCK_EX):
+        _write_unlocked([])
 
 
 def record_play(item_type: str, value: str, label: str = ""):
@@ -80,31 +85,31 @@ def record_play(item_type: str, value: str, label: str = ""):
         return
     label = (label or "").strip()
 
-    entries = _read()
-    # Remove existing entry with same value (move-to-top), keep its metadata
-    prev_title = ""
-    prev_artist = ""
-    prev_artwork = ""
-    for e in entries:
-        if e.get("value") == value:
-            prev_title = e.get("title", "") or ""
-            prev_artist = e.get("artist", "") or ""
-            prev_artwork = e.get("artwork", "") or ""
-            break
-    entries = [e for e in entries if e.get("value") != value]
-    entry = {
-        "label":  label or prev_title or value,
-        "type":   item_type,
-        "value":  value,
-        "title":  prev_title,
-        "artist": prev_artist,
-        "artwork": prev_artwork,
-        "timestamp": time.time(),
-    }
-    entries.insert(0, entry)
-    entries = entries[:MAX_ENTRIES]
     try:
-        _write(entries)
+        with _lock(fcntl.LOCK_EX):
+            entries = _read_unlocked()
+            # Remove existing entry with same value (move-to-top), keep its metadata
+            prev_title = ""
+            prev_artist = ""
+            prev_artwork = ""
+            for e in entries:
+                if e.get("value") == value:
+                    prev_title = e.get("title", "") or ""
+                    prev_artist = e.get("artist", "") or ""
+                    prev_artwork = e.get("artwork", "") or ""
+                    break
+            entries = [e for e in entries if e.get("value") != value]
+            entry = {
+                "label":  label or prev_title or value,
+                "type":   item_type,
+                "value":  value,
+                "title":  prev_title,
+                "artist": prev_artist,
+                "artwork": prev_artwork,
+                "timestamp": time.time(),
+            }
+            entries.insert(0, entry)
+            _write_unlocked(entries[:MAX_ENTRIES])
     except Exception as e:
         log.warning(f"play_history write failed: {e}")
 
@@ -127,21 +132,22 @@ def _fetch_metadata_later(value: str, update_text: bool = True):
         artwork = (status.get("artwork") or "").strip()
         if not title and not artwork:
             return
-        entries = _read()
-        changed = False
-        for e in entries:
-            if e.get("value") == value:
-                if artwork:
-                    e["artwork"] = artwork
-                    changed = True
-                if update_text and title:
-                    e["title"] = title
-                    e["artist"] = artist
-                    if not e.get("label") or e["label"] == value:
-                        e["label"] = title
-                    changed = True
-                break
-        if changed:
-            _write(entries)
+        with _lock(fcntl.LOCK_EX):
+            entries = _read_unlocked()
+            changed = False
+            for e in entries:
+                if e.get("value") == value:
+                    if artwork:
+                        e["artwork"] = artwork
+                        changed = True
+                    if update_text and title:
+                        e["title"] = title
+                        e["artist"] = artist
+                        if not e.get("label") or e["label"] == value:
+                            e["label"] = title
+                        changed = True
+                    break
+            if changed:
+                _write_unlocked(entries)
     except Exception as e:
         log.debug(f"metadata fetch failed: {e}")

@@ -81,7 +81,7 @@ git clone https://github.com/hannskanns4/kid2tune.git /tmp/kid2tune && sudo bash
 
 ### What the installer does
 
-1. Install system packages (Python, I2C, SPI, Bluetooth, hostapd, dnsmasq)
+1. Install system packages (Python, I2C, SPI, Bluetooth, NetworkManager tools)
 2. Create temporary swap (1 GB, for Pi Zero 2W with 512 MB RAM)
 3. Enable I2C + SPI in `/boot/firmware/config.txt`
 4. Configure USB sound card as default audio
@@ -99,6 +99,29 @@ The box is accessible at:
 
 - **Web UI**: `http://<hostname or IP>` (port 80)
 - **LMS Web UI**: `http://<hostname or IP>:9000`
+
+The installer creates a random AP password, enables adult-area PIN protection,
+and creates a box-cluster secret. Save the PIN and cluster secret printed at
+the end of installation. To enable box-to-box updates and multiroom on another
+box, set the same cluster secret there:
+
+```bash
+sudo python3 /opt/lms-controller/pin_tool.py cluster-set '<shared-secret>'
+```
+
+Use `sudo python3 /opt/lms-controller/pin_tool.py cluster-show` on an
+installed box to retrieve the secret locally.
+Cluster requests use HMAC signatures with timestamps/nonces to prevent request
+tampering and replay; the traffic itself is HTTP, so only use this on a trusted
+LAN. Private GitHub repositories require a token configured separately on
+each box; update tokens are no longer copied between devices.
+
+Update an existing box through **Settings → Software update → Check for
+updates → Update this box**. If PIN protection is enabled, unlock the adult
+area first. To update multiple boxes from one box, configure the same cluster
+secret on each device before using **Update all boxes**. The web services still
+run as root for GPIO, network and system-service operations; do not expose port
+80 to the public internet.
 
 ## Architecture
 
@@ -313,7 +336,7 @@ Main configuration in `/opt/lms-controller/config.json`:
 
 ```json
 {
-  "version": "2.12.0",
+  "version": "2.14.1",
   "language": "de",
   "lms_host": "localhost",
   "lms_port": 9000,
@@ -324,7 +347,7 @@ Main configuration in `/opt/lms-controller/config.json`:
     "play_layout": ["{title}", "{artist}", "{elapsed}/{duration}  {mode}", "{date}  {time}"]
   },
   "buttons": { "vol_up": 19, "vol_down": 26, "next": 16, "prev": 23, "pause": 21, "lcd_backlight": 20 },
-  "wifi": { "ap_ssid": "mybox-kid2tune", "ap_password": "Geheim123!", "ap_channel": 7, "check_interval": 30 },
+  "wifi": { "ap_ssid": "mybox-kid2tune", "ap_password": "<random-at-install>", "ap_channel": 7, "check_interval": 30 },
   "rfid_mappings": {},
   "sync": { "enabled": false, "nas_share": "", "username": "", "password": "", "mount_point": "/mnt/lms-sync", "box_id": "my-box" },
   "volume_max": 100,
@@ -334,7 +357,8 @@ Main configuration in `/opt/lms-controller/config.json`:
   "alarms": [],
   "bluetooth": { "active_device": "", "auto_reconnect": true, "check_interval": 15 },
   "known_boxes": {},
-  "github_token": ""
+  "github_token": "",
+  "security": { "adult_area_enabled": true, "cluster_secret": "<shared-secret>" }
 }
 ```
 
@@ -359,7 +383,7 @@ The web interface supports multiple languages. Language files are stored as JSON
 
 Via the web UI: **Settings -> Software Update**
 
-- **"Check for update"** — compares local version with GitHub tags (sorted by version number)
+- **"Check for update"** — compares the installed version with `app/version.txt` from GitHub
 - **"Update this box"** — pulls code via `git clone`, copies files, restarts services (always clickable)
 - **"Update all boxes"** — updates all boxes on the network automatically
 
@@ -375,6 +399,7 @@ sudo cp /tmp/kid2tune/app/*.py /opt/lms-controller/
 sudo cp /tmp/kid2tune/app/templates/*.html /opt/lms-controller/templates/
 sudo cp /tmp/kid2tune/app/lang/*.json /opt/lms-controller/lang/
 sudo cp /tmp/kid2tune/app/version.txt /opt/lms-controller/
+sudo /opt/lms-controller/venv/bin/pip install -r /tmp/kid2tune/requirements.txt
 sudo systemctl restart lms-web lms-rfid lms-hardware
 ```
 
@@ -402,10 +427,10 @@ sudo journalctl -u lms-web -n 50 --no-pager
 | LCD blank but lit | Wrong I2C address | LCD daemon tries 0x27 and 0x3F automatically. Check `sudo i2cdetect -y 1` |
 | RFID not reading | SPI not enabled | `sudo raspi-config` -> Interface -> SPI enable |
 | No sound | Wrong sound card | Check `aplay -l`, adjust `/etc/asound.conf` |
-| WiFi AP no connection | dnsmasq config missing | Restart: `sudo systemctl restart lms-web` |
+| WiFi AP no connection | NetworkManager hotspot failed | Check `nmcli device status`, then restart: `sudo systemctl restart lms-web` |
 | LMS install OOM kill | Not enough RAM (Pi Zero) | `install.sh` installs squeezelite after LMS and creates 1 GB swap |
 | Box broken after power loss | Filesystem corrupt | Check SD card with `fsck`, or use deep standby |
-| Update says "no update" | Version tag comparison | Update button is always clickable regardless of check result |
+| Update says "no update" | Remote `app/version.txt` check | Update button is always clickable regardless of check result |
 | Play/pause button stuck | LMS pause toggle bug | Fixed: explicit play/pause command based on current mode |
 
 ## 3D Printed Case

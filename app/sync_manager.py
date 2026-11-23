@@ -17,6 +17,8 @@ import re
 import subprocess
 import logging
 import tempfile
+import fcntl
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Tuple
 
@@ -28,7 +30,9 @@ log = logging.getLogger(__name__)
 
 DIR = os.path.dirname(os.path.abspath(__file__))
 PENDING_PATH = os.path.join(DIR, "sync_pending.json")
+PENDING_LOCK_PATH = PENDING_PATH + ".lock"
 SHARED_FILE = "rfid_sync_v2.json"
+SHARED_LOCK_FILE = SHARED_FILE + ".lock"
 MUSIC_DIR = "/home/music"
 NAS_MUSIC_DIR = "music"  # Subdirectory in the NAS mount
 MUSIC_EXTENSIONS = {".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".wma"}
@@ -218,7 +222,7 @@ def _mount_share() -> Tuple[bool, str]:
         pass
 
     # Mount SMB share (vers=3.0 -> 2.0 -> 1.0 fallback)
-    base_opts = "iocharset=utf8,file_mode=0666,dir_mode=0777"
+    base_opts = "iocharset=utf8,file_mode=0644,dir_mode=0755"
     cred_file = None
     last_err = "Mount failed."
     try:
@@ -283,6 +287,21 @@ def _mount_share() -> Tuple[bool, str]:
 def _shared_path() -> str:
     mount_point = get_sync_config().get("mount_point", "/mnt/lms-sync")
     return os.path.join(mount_point, SHARED_FILE)
+
+
+@contextmanager
+def _shared_lock(mode):
+    lock_path = os.path.join(
+        get_sync_config().get("mount_point", "/mnt/lms-sync"),
+        SHARED_LOCK_FILE,
+    )
+    lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(lock_fd, mode)
+        yield
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
 
 
 def _load_shared() -> dict:
@@ -370,9 +389,15 @@ def _save_pending(pending: list):
     os.replace(tmp, PENDING_PATH)
 
 
-def _clear_pending():
-    if os.path.exists(PENDING_PATH):
-        os.remove(PENDING_PATH)
+@contextmanager
+def _pending_lock():
+    lock_fd = os.open(PENDING_LOCK_PATH, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
 
 
 def queue_change(action: str, uid: str, data: dict = None):
@@ -380,7 +405,6 @@ def queue_change(action: str, uid: str, data: dict = None):
     sync_cfg = get_sync_config()
     if not sync_cfg.get("enabled"):
         return
-    pending = _load_pending()
     entry = {
         "action": action,
         "uid": uid,
@@ -389,15 +413,18 @@ def queue_change(action: str, uid: str, data: dict = None):
     }
     if action == "upsert" and data:
         entry["data"] = data
-    # Remove previous entries for the same UID (only the newest counts)
-    pending = [p for p in pending if p.get("uid") != uid]
-    pending.append(entry)
-    _save_pending(pending)
+    with _pending_lock():
+        pending = _load_pending()
+        # Remove previous entries for the same UID (only the newest counts)
+        pending = [p for p in pending if p.get("uid") != uid]
+        pending.append(entry)
+        _save_pending(pending)
     log.info(f"Offline queue: {action} {uid} ({len(pending)} pending)")
 
 
 def get_pending_count() -> int:
-    return len(_load_pending())
+    with _pending_lock():
+        return len(_load_pending())
 
 
 # ── Merge Logic (Last-Write-Wins) ──────────────────────────────────────────
@@ -439,54 +466,69 @@ def push_mappings() -> Tuple[bool, str]:
         now = _now_iso()
         local_mappings = cfg.get("rfid_mappings", {})
 
-        shared = _load_shared()
-        changes = 0
-
         # 1. Process pending queue (has priority, as these are explicit actions)
-        pending = _load_pending()
-        for p in pending:
-            uid = p["uid"]
-            ts = p["timestamp"]
-            p_box = p.get("box_id", box_id)
+        with _pending_lock():
+            pending = _load_pending()
+        changes = 0
+        # CIFS byte-range locks serialize read/merge/write across boxes using
+        # this client; atomic rename alone cannot prevent stale overwrites.
+        with _shared_lock(fcntl.LOCK_EX):
+            shared = _load_shared()
+            for p in pending:
+                uid = p["uid"]
+                ts = p["timestamp"]
+                p_box = p.get("box_id", box_id)
 
-            if p["action"] == "delete":
+                if p["action"] == "delete":
+                    entry = {
+                        "label": "",
+                        "type": "",
+                        "value": "",
+                        "updated_at": ts,
+                        "updated_by": p_box,
+                        "deleted": True,
+                    }
+                else:
+                    data = p.get("data", {})
+                    entry = {
+                        "label": data.get("label", ""),
+                        "type": data.get("type", ""),
+                        "value": data.get("value", ""),
+                        "updated_at": ts,
+                        "updated_by": p_box,
+                        "deleted": False,
+                    }
+
+                if _merge_into_shared(shared, uid, entry):
+                    changes += 1
+
+            for uid, mapping in local_mappings.items():
                 entry = {
-                    "label": "",
-                    "type": "",
-                    "value": "",
-                    "updated_at": ts,
-                    "updated_by": p_box,
-                    "deleted": True,
-                }
-            else:  # upsert
-                data = p.get("data", {})
-                entry = {
-                    "label": data.get("label", ""),
-                    "type": data.get("type", ""),
-                    "value": data.get("value", ""),
-                    "updated_at": ts,
-                    "updated_by": p_box,
+                    "label": mapping.get("label", ""),
+                    "type": mapping.get("type", ""),
+                    "value": mapping.get("value", ""),
+                    "updated_at": mapping.get("updated_at", now),
+                    "updated_by": mapping.get("updated_by", box_id),
                     "deleted": False,
                 }
+                if _merge_into_shared(shared, uid, entry):
+                    changes += 1
+            _save_shared(shared)
 
-            if _merge_into_shared(shared, uid, entry):
-                changes += 1
-
-        # 2. Push current local mappings (only if not already newer in shared)
-        for uid, mapping in local_mappings.items():
-            entry = {
-                "label": mapping.get("label", ""),
-                "type": mapping.get("type", ""),
-                "value": mapping.get("value", ""),
-                "updated_at": mapping.get("updated_at", now),
-                "updated_by": mapping.get("updated_by", box_id),
-                "deleted": False,
-            }
-            if _merge_into_shared(shared, uid, entry):
-                changes += 1
-
-        _save_shared(shared)
-        _clear_pending()
+        # Remove only the changes included in this push. A new queue entry
+        # may have arrived while NAS I/O was in progress.
+        pushed_ids = {
+            (p.get("uid"), p.get("timestamp"), p.get("action"))
+            for p in pending
+        }
+        with _pending_lock():
+            current = _load_pending()
+            remaining = [
+                p for p in current
+                if (p.get("uid"), p.get("timestamp"), p.get("action")) not in pushed_ids
+            ]
+            if remaining != current:
+                _save_pending(remaining)
 
         active = sum(1 for e in shared["entries"].values() if not e.get("deleted"))
         deleted = sum(1 for e in shared["entries"].values() if e.get("deleted"))
@@ -510,8 +552,8 @@ def pull_mappings() -> Tuple[bool, str]:
         return False, f"NAS not reachable: {err}"
 
     try:
-        # Read the shared state from the NAS BEFORE taking the config lock, so
-        # the (potentially slow) NAS I/O does not block other config access.
+        # Atomic replacement lets readers take either complete version without
+        # requiring write permission on a read-only NAS share.
         shared = _load_shared()
         entries = shared.get("entries", {})
 

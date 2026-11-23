@@ -24,13 +24,14 @@ _LOCK_PATH = CONFIG_PATH + ".lock"
 _BAK_PATH = CONFIG_PATH + ".bak"
 
 # Last resort when config.json AND the backup are unreadable. Keeping the
-# services alive with defaults beats an endless Restart=always crash loop:
-# the box still boots, the web UI comes up and a parent can fix it there.
+# services alive with defaults beats an endless Restart=always crash loop.
+# The adult area remains locked; recovery uses pin_tool.py to set a new PIN.
 _FALLBACK = {
     "language": "de",
     "lms_host": "localhost",
     "lms_port": 9000,
     "rfid_mappings": {},
+    "security": {"adult_area_enabled": True},
 }
 
 

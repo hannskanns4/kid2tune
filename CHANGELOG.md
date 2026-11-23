@@ -3,6 +3,28 @@
 All notable changes to this project are documented here.
 Versioning: **X.Y.Z** — X = major, Y = feature, Z = bugfix.
 
+## [2.14.1] – 2026-11-23
+
+### Security
+- Box-to-box endpoints fail closed without a cluster secret. Signed HMAC
+  requests bind method, path and body and reject stale/replayed requests.
+- Fresh installs generate an adult-area PIN, AP password and cluster secret;
+  update tokens are no longer forwarded to other boxes.
+- RFID CSV exports neutralize spreadsheet formula prefixes.
+
+### Fixed
+- NAS offline-queue and playback-history updates serialize read/modify/write
+  operations; Bluetooth scans use process-safe file locking.
+- WiFi configuration permissions are re-applied, NAS mounts are no longer
+  world-writable, and `/home/music` is no longer world-writable.
+- Installer creates `/etc/cloud` before disabling cloud-init and uses Waitress
+  instead of Flask's development server (with a compatibility fallback).
+- Added CI checks for Python compilation, critical Ruff errors, tests and
+  installer ShellCheck.
+
+### Changed
+- Box-to-box update and multiroom requests require the shared cluster secret.
+
 ## [2.13.0] – 2026-10-04
 
 ### Added
@@ -298,7 +320,7 @@ Versioning: **X.Y.Z** — X = major, Y = feature, Z = bugfix.
 - New languages can be added by copying a JSON file
 - `i18n.py` module with `t()` function for Python and Jinja2 templates
 - LMS link in navbar (opens Lyrion Music Server in new tab)
-- LICENSE file (MIT)
+- LICENSE file (GPL-2.0)
 - `requirements.txt` with Python dependencies
 - `CHANGELOG.md` with version history
 
