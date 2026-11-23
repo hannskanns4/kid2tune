@@ -19,6 +19,8 @@ jobs:
       - name: Check critical Python errors
         run: ruff check --select E9,F63,F7,F82 app tests
       - name: Run unit tests
+        env:
+          PYTHONPATH: app
         run: python -m unittest discover -s tests -v
       - name: Install ShellCheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
