@@ -3,7 +3,7 @@ wifi_manager.py – WiFi manager with access point fallback
 
 Features:
 - Scans available WiFi networks
-- Manages known networks via wpa_supplicant
+- Manages saved networks through NetworkManager, with legacy wpa_supplicant support
 - Starts AP mode via NetworkManager when no known WiFi is reachable
 - Switches back to client mode as soon as a known WiFi is available again
 """
@@ -34,6 +34,66 @@ IFACE = "wlan0"
 def _secure_wpa_config():
     if os.path.exists(WPA_CONF):
         os.chmod(WPA_CONF, 0o600)
+
+
+def _nmcli(args: List[str], timeout: int = 10):
+    return subprocess.run(
+        ["nmcli", *args],
+        capture_output=True, text=True, timeout=timeout,
+    )
+
+
+def _split_nmcli_row(line: str) -> List[str]:
+    fields = []
+    field = []
+    escaped = False
+    for char in line:
+        if escaped:
+            field.append(char)
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == ":":
+            fields.append("".join(field))
+            field = []
+        else:
+            field.append(char)
+    if escaped:
+        field.append("\\")
+    fields.append("".join(field))
+    return fields
+
+
+def _nm_wifi_profiles() -> List[dict]:
+    """Returns saved WiFi profiles from NetworkManager."""
+    try:
+        result = _nmcli([
+            "-t", "-e", "yes", "-f",
+            "UUID,TYPE,802-11-wireless.ssid,"
+            "802-11-wireless-security.key-mgmt",
+            "connection", "show",
+        ])
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError("Timed out reading NetworkManager profiles.") from e
+    if result.returncode != 0:
+        raise RuntimeError(
+            result.stderr.strip() or "Could not read NetworkManager profiles."
+        )
+
+    profiles = []
+    for line in result.stdout.splitlines():
+        fields = _split_nmcli_row(line)
+        if len(fields) != 4 or fields[1] != "802-11-wireless":
+            continue
+        uuid, _, ssid, key_mgmt = fields
+        if not ssid or ssid == "--":
+            continue
+        profiles.append({
+            "uuid": uuid,
+            "ssid": ssid,
+            "key_mgmt": "" if key_mgmt == "--" else key_mgmt,
+        })
+    return profiles
 
 
 # ── Configuration ────────────────────────────────────────────────────────────
@@ -126,10 +186,22 @@ def scan_networks() -> List[dict]:
 # ── wpa_supplicant Management ────────────────────────────────────────────────
 
 def get_known_networks() -> List[dict]:
-    """Reads known networks from wpa_supplicant.conf."""
-    networks = []
+    """Reads saved networks from NetworkManager and legacy wpa_supplicant."""
+    networks = {}
+    try:
+        for profile in _nm_wifi_profiles():
+            key_mgmt = profile["key_mgmt"]
+            networks[profile["ssid"]] = {
+                "ssid": profile["ssid"],
+                "has_password": bool(key_mgmt and key_mgmt.lower() != "none"),
+                "key_mgmt": "Open" if not key_mgmt or key_mgmt.lower() == "none"
+                else key_mgmt.upper(),
+            }
+    except (FileNotFoundError, RuntimeError) as e:
+        log.warning(f"Could not read NetworkManager WiFi profiles: {e}")
+
     if not os.path.exists(WPA_CONF):
-        return networks
+        return list(networks.values())
     try:
         _secure_wpa_config()
         with open(WPA_CONF) as f:
@@ -141,14 +213,15 @@ def get_known_networks() -> List[dict]:
             psk_m = re.search(r'psk="([^"]+)"', block)
             key_m = re.search(r'key_mgmt=(\S+)', block)
             if ssid_m:
-                networks.append({
-                    "ssid": ssid_m.group(1),
+                name = ssid_m.group(1)
+                networks.setdefault(name, {
+                    "ssid": name,
                     "has_password": psk_m is not None,
                     "key_mgmt": key_m.group(1) if key_m else "WPA-PSK",
                 })
     except Exception as e:
         log.error(f"Error reading wpa_supplicant.conf: {e}")
-    return networks
+    return list(networks.values())
 
 
 def valid_ssid(ssid: str) -> bool:
@@ -196,7 +269,9 @@ def add_network(ssid: str, password: str = "") -> Tuple[bool, str]:
         content = f.read()
     if f'ssid="{ssid}"' in content:
         # Update existing network: remove and re-add
-        remove_network(ssid)
+        ok, message = remove_network(ssid)
+        if not ok:
+            return False, message
         with open(WPA_CONF) as f:
             content = f.read()
 
@@ -215,27 +290,52 @@ def add_network(ssid: str, password: str = "") -> Tuple[bool, str]:
 
 
 def remove_network(ssid: str) -> Tuple[bool, str]:
-    """Removes a WiFi network."""
+    """Removes the network from NetworkManager and legacy wpa_supplicant."""
+    try:
+        profiles = _nm_wifi_profiles()
+    except FileNotFoundError:
+        profiles = []
+    except RuntimeError as e:
+        return False, f"Could not inspect NetworkManager profiles: {e}"
+
+    removed_profiles = 0
+    for profile in profiles:
+        if profile["ssid"] != ssid:
+            continue
+        try:
+            result = _nmcli(["connection", "delete", "uuid", profile["uuid"]])
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return False, f"Could not remove NetworkManager profile: {e}"
+        if result.returncode != 0:
+            error = result.stderr.strip() or "NetworkManager rejected profile deletion."
+            return False, f"Could not remove NetworkManager profile: {error}"
+        removed_profiles += 1
+
+    removed_wpa = _remove_wpa_network(ssid)
+    if not removed_profiles and not removed_wpa:
+        return False, f"Network '{ssid}' not found."
+
+    log.info(f"Network '{ssid}' removed from saved WiFi profiles.")
+    return True, f"Network '{ssid}' removed."
+
+
+def _remove_wpa_network(ssid: str) -> bool:
     if not os.path.exists(WPA_CONF):
-        return False, "wpa_supplicant.conf not found."
+        return False
 
     _secure_wpa_config()
     with open(WPA_CONF) as f:
         content = f.read()
 
-    # Remove network block with this SSID
     pattern = rf'\n?network=\{{[^}}]*ssid="{re.escape(ssid)}"[^}}]*\}}\n?'
     new_content = re.sub(pattern, '\n', content, flags=re.DOTALL)
-
     if new_content == content:
-        return False, f"Network '{ssid}' not found."
+        return False
 
     with open(WPA_CONF, "w") as f:
         f.write(new_content)
     _secure_wpa_config()
-
-    log.info(f"Network '{ssid}' removed.")
-    return True, f"Network '{ssid}' removed."
+    return True
 
 
 def reconfigure_wpa() -> bool:
@@ -439,33 +539,81 @@ def connect_to_network(ssid: str, password: str = "") -> Tuple[bool, str]:
 
     # If AP is active, stop it first
     if is_ap_active():
-        stop_ap()
+        stopped, message = stop_ap()
+        if not stopped:
+            return False, message
         time.sleep(2)
 
     log.info(f"Connecting to '{ssid}' via nmcli...")
+    profiles_to_cleanup = []
     try:
-        # Try to connect directly via nmcli
-        cmd = ["nmcli", "device", "wifi", "connect", ssid]
-        if password:
-            cmd += ["password", password]
-        cmd += ["ifname", IFACE]
+        profiles = _nm_wifi_profiles()
+        matching = [profile for profile in profiles if profile["ssid"] == ssid]
+        if matching and password:
+            profile = matching[0]
+            profiles_to_cleanup = matching[1:]
+            result = _nmcli([
+                "connection", "modify", "uuid", profile["uuid"],
+                "connection.autoconnect", "yes",
+                "connection.autoconnect-retries", "-1",
+                "802-11-wireless-security.key-mgmt", "wpa-psk",
+                "802-11-wireless-security.psk", password,
+            ])
+            if result.returncode != 0:
+                message = result.stderr.strip().replace(password, "***")
+                return False, message or "Could not update the saved WiFi credentials."
 
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        if result.returncode == 0:
-            log.info(f"Connected to '{ssid}'.")
-            return True, f"Connected to '{ssid}'"
+            result = _nmcli([
+                "connection", "up", "uuid", profile["uuid"], "ifname", IFACE,
+            ], timeout=30)
+        else:
+            for profile in matching:
+                result = _nmcli([
+                    "connection", "delete", "uuid", profile["uuid"],
+                ])
+                if result.returncode != 0:
+                    return False, result.stderr.strip() or (
+                        f"Could not replace the saved profile for '{ssid}'."
+                    )
 
-        # Fallback: wpa_supplicant
-        add_network(ssid, password)
+            command = ["device", "wifi", "connect", ssid]
+            if password:
+                command += ["password", password]
+            command += ["ifname", IFACE]
+            result = _nmcli(command, timeout=30)
+
+        if result.returncode != 0:
+            error = result.stderr.strip()
+            if password:
+                error = error.replace(password, "***")
+            return False, f"Connection to '{ssid}' failed: {error}"
+
+        for profile in profiles_to_cleanup:
+            cleanup = _nmcli(["connection", "delete", "uuid", profile["uuid"]])
+            if cleanup.returncode != 0:
+                log.warning(
+                    f"Connected to '{ssid}' but could not remove duplicate "
+                    f"NetworkManager profile {profile['uuid']}: "
+                    f"{cleanup.stderr.strip()}"
+                )
+        _remove_wpa_network(ssid)
+        log.info(f"Connected to '{ssid}'.")
+        return True, f"Connected to '{ssid}'"
+    except FileNotFoundError:
+        # Legacy systems without NetworkManager still use wpa_supplicant.
+        saved, message = add_network(ssid, password)
+        if not saved:
+            return False, message
         reconfigure_wpa()
         time.sleep(5)
 
         status = get_connection_status()
         if status["connected"] and status["ssid"] == ssid:
             return True, f"Connected to '{ssid}'"
-
-        return False, f"Connection to '{ssid}' failed: {result.stderr.strip()}"
-    except Exception as e:
+        return False, f"Connection to '{ssid}' failed."
+    except (RuntimeError, subprocess.TimeoutExpired) as e:
+        return False, str(e)
+    except OSError as e:
         return False, str(e)
 
 
@@ -483,6 +631,39 @@ def _any_known_available() -> bool:
         if net["ssid"] in known:
             return True
     return False
+
+
+def _retry_known_networks() -> bool:
+    """Reactivates saved NetworkManager profiles visible in the current scan."""
+    try:
+        profiles = _nm_wifi_profiles()
+    except (FileNotFoundError, RuntimeError, subprocess.TimeoutExpired) as e:
+        log.warning(f"Could not retry saved WiFi profiles: {e}")
+        return False
+
+    available = {network["ssid"] for network in scan_networks()}
+    candidates = [profile for profile in profiles if profile["ssid"] in available]
+    for profile in candidates:
+        try:
+            result = _nmcli([
+                "connection", "up", "uuid", profile["uuid"], "ifname", IFACE,
+            ], timeout=30)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            log.warning(f"Reconnect attempt for '{profile['ssid']}' failed: {e}")
+            continue
+        if result.returncode == 0:
+            for _ in range(5):
+                if _is_nm_connected():
+                    log.info(f"Reconnected to '{profile['ssid']}'.")
+                    return True
+                time.sleep(1)
+        else:
+            error = result.stderr.strip()
+            log.warning(
+                f"Reconnect attempt for '{profile['ssid']}' failed: "
+                f"{error or 'NetworkManager did not activate the profile.'}"
+            )
+    return _is_nm_connected()
 
 
 _ap_check_counter = 0
@@ -508,10 +689,11 @@ def daemon_tick():
             _ap_check_counter = 0
             log.info("AP active – checking if home WiFi is available...")
             # Stop AP -> NM tries to connect to known WiFi automatically
-            stop_ap()
-            time.sleep(10)
-
-            if _is_nm_connected():
+            stopped, message = stop_ap()
+            if not stopped:
+                log.error(f"Could not stop AP for WiFi retry: {message}")
+                return
+            if _is_nm_connected() or _retry_known_networks():
                 log.info("Home WiFi found – client mode active.")
             else:
                 log.info("No known WiFi – restarting AP.")
@@ -523,6 +705,8 @@ def daemon_tick():
             time.sleep(15)
             if _is_nm_connected():
                 log.info("WiFi back (brief interruption).")
+            elif _retry_known_networks():
+                log.info("WiFi restored using a saved connection profile.")
             else:
                 log.info("No WiFi – starting AP mode.")
                 start_ap()

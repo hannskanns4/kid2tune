@@ -336,7 +336,7 @@ Main configuration in `/opt/lms-controller/config.json`:
 
 ```json
 {
-  "version": "2.14.1",
+  "version": "2.14.2",
   "language": "de",
   "lms_host": "localhost",
   "lms_port": 9000,

@@ -3,6 +3,15 @@
 All notable changes to this project are documented here.
 Versioning: **X.Y.Z** — X = major, Y = feature, Z = bugfix.
 
+## [2.14.2] – 2026-11-23
+
+### Fixed
+- WiFi profiles are now listed, updated and removed through NetworkManager as
+  well as the legacy `wpa_supplicant` file. Reconnecting to a saved SSID
+  refreshes its credentials instead of silently reusing a stale profile.
+- The WiFi daemon retries visible saved NetworkManager profiles before
+  switching to the fallback access point.
+
 ## [2.14.1] – 2026-11-23
 
 ### Security
